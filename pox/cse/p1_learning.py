@@ -29,12 +29,25 @@ class LearningSwitch (EventMixin):
 
     # parsing the input packet
     packet = event.parse()
+
+    def flood (message = None):
+      msg = of.ofp_packet_out();
+      msg.actions.append(of.ofp_action_output(port = of.OFPP_FLOOD));
+      # where does event data go ? 
+      msg.data = event.ofp;
+      msg.in_port = event.port;
+      self.connection.send(msg);
     
     # updating out mac to port mapping
     self.mac_to_port[packet.src] = event.port;
 
     if packet.dst not in self.mac_to_port:
-      
+      log.debug("Port for %s unknown -- flooding" % (packet.dst,))
+      msg = of.ofp_packet_out()
+      msg.actions.append(of.ofp_action_output(port = of.OFPP_FLOOD))
+      msg.buffer_id = event.ofp.buffer_id
+      msg.in_port = event.port
+      self.connection.send(msg)      
 
     if packet.type == packet.LLDP_TYPE or packet.type == 0x86DD:
       # Drop LLDP packets 
@@ -46,13 +59,6 @@ class LearningSwitch (EventMixin):
       msg.in_port = event.port
       self.connection.send(msg)
       return
-
-    log.debug("Port for %s unknown -- flooding" % (packet.dst,))
-    msg = of.ofp_packet_out()
-    msg.actions.append(of.ofp_action_output(port = of.OFPP_FLOOD))
-    msg.buffer_id = event.ofp.buffer_id
-    msg.in_port = event.port
-    self.connection.send(msg)
 
 class learning_switch (EventMixin):
 
