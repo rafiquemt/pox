@@ -31,11 +31,11 @@ class LearningSwitch (EventMixin):
     packet = event.parse()
 
     def flood (message = None):
-      msg = of.ofp_packet_out();
-      msg.actions.append(of.ofp_action_output(port = of.OFPP_FLOOD));
-      msg.buffer_id = event.ofp.buffer_id;
-      msg.in_port = event.port;
-      self.connection.send(msg);
+      msg = of.ofp_packet_out()
+      msg.actions.append(of.ofp_action_output(port = of.OFPP_FLOOD))
+      msg.buffer_id = event.ofp.buffer_id
+      msg.in_port = event.port
+      self.connection.send(msg)
     
     def drop ():
       msg = of.ofp_packet_out()
@@ -45,7 +45,7 @@ class LearningSwitch (EventMixin):
       self.connection.send(msg)
 
     # updating out mac to port mapping
-    self.mac_to_port[packet.src] = event.port;
+    self.mac_to_port[packet.src] = event.port
 
     if packet.type == packet.LLDP_TYPE or packet.type == 0x86DD:
       # Drop LLDP packets 
@@ -57,7 +57,15 @@ class LearningSwitch (EventMixin):
       flood("Port for %s unknown -- flooding" % (packet.dst,))
     else:
       # install a rule in the switch and send packet to its destination
-      
+      toInstallPort = self.mac_to_port[packet.dst]
+      log.debug("installing flow for %s.%i -> %s.%i" %
+                (packet.src, event.port, packet.dst, toInstallPort))
+      msg = of.ofp_flow_mod()
+      msg.match = of.ofp_match.from_packet(packet, event.port)
+      msg.actions.append(of.ofp_action_output(port = toInstallPort))
+      msg.data = event.ofp
+      self.connection.send(msg)
+
 class learning_switch (EventMixin):
 
   def __init__(self):
