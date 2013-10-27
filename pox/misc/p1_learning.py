@@ -66,7 +66,7 @@ class LearningSwitch (EventMixin):
       msg.data = event.ofp
       self.connection.send(msg)
 
-class learning_switch (EventMixin):
+class p1_learning (EventMixin):
 
   def __init__(self):
     self.listenTo(core.openflow)
@@ -78,4 +78,4 @@ class learning_switch (EventMixin):
 
 def launch ():
   #Starts an L2 learning switch.
-  core.registerNew(learning_switch)
+  core.registerNew(p1_learning)
