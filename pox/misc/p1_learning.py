@@ -55,6 +55,10 @@ class LearningSwitch (EventMixin):
       drop()
       return
     log.debug ("got a packet");
+    if (packet.type == packet.ARP_TYPE):
+      log.debug("got an arp packet")
+      pass
+
     if packet.dst not in self.mac_to_port:
       flood("Port for %s unknown -- flooding" % (packet.dst,))
     else:
