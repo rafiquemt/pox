@@ -16,6 +16,7 @@ log = core.getLogger()
 
 HARD_TIMEOUT = 30
 IDLE_TIMEOUT = 30
+
 class LearningSwitch (EventMixin):
 
   def __init__ (self,connection):
@@ -23,7 +24,6 @@ class LearningSwitch (EventMixin):
     self.connection= connection
     self.mac_to_port = {}
     self.listenTo(connection)
-    
 
   def _handle_PacketIn (self, event):
 
@@ -31,6 +31,7 @@ class LearningSwitch (EventMixin):
     packet = event.parse()
 
     def flood (message = None):
+      if message is not None: log.debug(message)
       msg = of.ofp_packet_out()
       msg.actions.append(of.ofp_action_output(port = of.OFPP_FLOOD))
       msg.buffer_id = event.ofp.buffer_id
@@ -50,20 +51,22 @@ class LearningSwitch (EventMixin):
     if packet.type == packet.LLDP_TYPE or packet.type == 0x86DD:
       # Drop LLDP packets 
       # Drop IPv6 packets
+      log.debug("Dropping a packet of type %s" % (packet.type,))
       drop()
       return
-
+    log.debug ("got a packet");
     if packet.dst not in self.mac_to_port:
       flood("Port for %s unknown -- flooding" % (packet.dst,))
     else:
       # install a rule in the switch and send packet to its destination
       toInstallPort = self.mac_to_port[packet.dst]
-      log.debug("installing flow for %s.%i -> %s.%i" %
-                (packet.src, event.port, packet.dst, toInstallPort))
       msg = of.ofp_flow_mod()
-      msg.match = of.ofp_match.from_packet(packet, event.port)
+      #msg.match = of.ofp_match.from_packet(packet, event.port)
+      msg.match = of.ofp_match(dl_dst = packet.dst)
       msg.actions.append(of.ofp_action_output(port = toInstallPort))
       msg.data = event.ofp
+      log.debug("installing flow for %s.%i -> %s.%i" %
+        (packet.src, event.port, packet.dst, toInstallPort))
       self.connection.send(msg)
 
 class p1_learning (EventMixin):
