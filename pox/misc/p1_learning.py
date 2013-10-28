@@ -23,6 +23,7 @@ class LearningSwitch (EventMixin):
     # Switch we'll be adding L2 learning switch capabilities to
     self.connection= connection
     self.mac_to_port = {}
+    self.ip_to_mac_arp = {}
     self.listenTo(connection)
 
   def _handle_PacketIn (self, event):
@@ -57,7 +58,8 @@ class LearningSwitch (EventMixin):
     log.debug ("got a packet");
     if (packet.type == packet.ARP_TYPE):
       log.debug("got an arp packet")
-      pass
+      
+      return
 
     if packet.dst not in self.mac_to_port:
       flood("Port for %s unknown -- flooding" % (packet.dst,))
