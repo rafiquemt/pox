@@ -45,6 +45,7 @@ class LoadBalancer (EventMixin):
     self.server_mac_to_ip[3] = Server("10.0.0.9", "00:00:00:00:00:09", 9, 0)
     self.server_mac_to_ip[4] = Server("10.0.0.10", "00:00:00:00:00:0a", 10, 0)    
     self.nextHost = 0
+    self.client_ips = {}
     self.listenTo(connection)
 
 
@@ -85,10 +86,11 @@ class LoadBalancer (EventMixin):
       msg.match = of.ofp_match(nw_dst = IPAddr(self.VIP), nw_src = IPAddr(client_ip))
       server.port = self.mac_to_port[EthAddr(server.mac)]
       log.debug("found %s at port %s" % (server.mac, server.port))
-      msg.actions.append(of.ofp_action_output(port = server.port))
       msg.actions.append(of.ofp_action_dl_addr.set_dst(EthAddr(server.mac)))
       msg.actions.append(of.ofp_action_nw_addr.set_dst(IPAddr(server.ip)))
-      msg.data = event.ofp
+      msg.actions.append(of.ofp_action_output(port = server.port))
+      msg.buffer_id = event.ofp.buffer_id
+      msg.in_port = event.port
       msg.idle_timeout = IDLE_TIMEOUT
       msg.hard_timeout = HARD_TIMEOUT
       log.debug("installing flow to rewrite dest (%s, %s) for packets from %s" % (server.mac, server.ip, client_ip))
@@ -96,16 +98,16 @@ class LoadBalancer (EventMixin):
 
       # add another rule to overwrite a packet in the reverse direction
       # if destination IP is client IP, then the source IP,mac becomes the VIP,mac
-      msg = of.ofp_flow_mod()
-      msg.match = of.ofp_match(nw_dst = IPAddr(client_ip), nw_src = IPAddr(server.ip))
-      client_port = self.mac_to_port[incoming_packet.src]
-      msg.actions.append(of.ofp_action_output(port = server.port))
-      msg.actions.append(of.ofp_action_dl_addr.set_src(EthAddr(self.VIP_MAC)))
-      msg.actions.append(of.ofp_action_nw_addr.set_src(IPAddr(self.VIP)))
-      msg.idle_timeout = IDLE_TIMEOUT
-      msg.hard_timeout = HARD_TIMEOUT
-      log.debug("installing flow to rewrite src to (%s, %s) for packets from %s" % (self.VIP_MAC, self.VIP, server.ip))
-      self.connection.send(msg)      
+      # msg = of.ofp_flow_mod()
+      # msg.match = of.ofp_match(nw_dst = IPAddr(client_ip), nw_src = IPAddr(server.ip))
+      # client_port = self.mac_to_port[incoming_packet.src]
+      # msg.actions.append(of.ofp_action_output(port = server.port))
+      # msg.actions.append(of.ofp_action_dl_addr.set_src(EthAddr(self.VIP_MAC)))
+      # msg.actions.append(of.ofp_action_nw_addr.set_src(IPAddr(self.VIP)))
+      # msg.idle_timeout = IDLE_TIMEOUT
+      # msg.hard_timeout = HARD_TIMEOUT
+      # log.debug("installing flow to rewrite src to (%s, %s) for packets from %s" % (self.VIP_MAC, self.VIP, server.ip))
+      # self.connection.send(msg)      
       return
 
     # updating out mac to port mapping
@@ -118,9 +120,10 @@ class LoadBalancer (EventMixin):
       log.debug("Dropping a packet of type %s" % (packet.type,))
       drop()
       return
-    log.debug ("got a packet");
+    log.debug ("got a packet: %s" % (packet.dst,));
+
     if (packet.type == packet.ARP_TYPE):
-      log.debug("got an arp packet")     
+      log.debug("ERROR: shouldn't happen ******* got an arp packet")     
       pass
 
     if packet.dst == self.VIP_MAC:
@@ -130,6 +133,20 @@ class LoadBalancer (EventMixin):
       # install a rule to send it to the next available server
       installRuleForToLoadBalance(server_to_use, packet.next.srcip, packet)
       return
+    else:
+      msg = of.ofp_flow_mod()
+      msg.match = of.ofp_match(nw_dst=packet.next.dstip, nw_src = packet.next.srcip)
+      destination_port = self.mac_to_port[packet.dst]
+      msg.actions.append(of.ofp_action_output(port = destination_port))
+      msg.actions.append(of.ofp_action_dl_addr.set_src(EthAddr(self.VIP_MAC)))
+      msg.actions.append(of.ofp_action_nw_addr.set_src(IPAddr(self.VIP)))
+      msg.data = event.ofp
+      msg.idle_timeout = IDLE_TIMEOUT
+      msg.hard_timeout = HARD_TIMEOUT
+      log.debug("installing flow to rewrite src to (%s, %s) for packets from %s" % 
+        (self.VIP_MAC, self.VIP, packet.next.srcip))
+      self.connection.send(msg)      
+      return 
 
     if packet.dst not in self.mac_to_port:
       flood("Port for %s unknown -- flooding" % (packet.dst,))
