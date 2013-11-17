@@ -78,26 +78,39 @@ class LoadBalancer (EventMixin):
       # this msg has no actions, so the pack wil be dropped
       self.connection.send(msg)
 
-    def installRuleForToLoadBalance(server, client_ip):
+    def installRuleForToLoadBalance(server, client_ip, incoming_packet):
       msg = of.ofp_flow_mod()
       # overwrite the destination IP and MAC address to be that of the selected server
 
       msg.match = of.ofp_match(nw_dst = IPAddr(self.VIP), nw_src = IPAddr(client_ip))
+      server.port = self.mac_to_port[EthAddr(server.mac)]
+      log.debug("found %s at port %s" % (server.mac, server.port))
       msg.actions.append(of.ofp_action_output(port = server.port))
       msg.actions.append(of.ofp_action_dl_addr.set_dst(EthAddr(server.mac)))
       msg.actions.append(of.ofp_action_nw_addr.set_dst(IPAddr(server.ip)))
       msg.data = event.ofp
       msg.idle_timeout = IDLE_TIMEOUT
       msg.hard_timeout = HARD_TIMEOUT
-      log.debug("installing flow to rewrite dest (%s, %s) for packets from %s", (server.mac, server.ip, client_ip))
+      log.debug("installing flow to rewrite dest (%s, %s) for packets from %s" % (server.mac, server.ip, client_ip))
       self.connection.send(msg)
 
       # add another rule to overwrite a packet in the reverse direction
-      
-      pass
+      # if destination IP is client IP, then the source IP,mac becomes the VIP,mac
+      msg = of.ofp_flow_mod()
+      msg.match = of.ofp_match(nw_dst = IPAddr(client_ip), nw_src = IPAddr(server.ip))
+      client_port = self.mac_to_port[incoming_packet.src]
+      msg.actions.append(of.ofp_action_output(port = server.port))
+      msg.actions.append(of.ofp_action_dl_addr.set_src(EthAddr(self.VIP_MAC)))
+      msg.actions.append(of.ofp_action_nw_addr.set_src(IPAddr(self.VIP)))
+      msg.idle_timeout = IDLE_TIMEOUT
+      msg.hard_timeout = HARD_TIMEOUT
+      log.debug("installing flow to rewrite src to (%s, %s) for packets from %s" % (self.VIP_MAC, self.VIP, server.ip))
+      self.connection.send(msg)      
+      return
 
     # updating out mac to port mapping
     self.mac_to_port[packet.src] = event.port
+    log.debug("port **** %s" % (event.port,))
 
     if packet.type == packet.LLDP_TYPE or packet.type == 0x86DD:
       # Drop LLDP packets 
@@ -115,7 +128,7 @@ class LoadBalancer (EventMixin):
       # find a host to go to
       server_to_use = getNextAvailableServer(packet.next.srcip)
       # install a rule to send it to the next available server
-      installRuleForToLoadBalance(server_to_use, packet.next.srcip)
+      installRuleForToLoadBalance(server_to_use, packet.next.srcip, packet)
       return
 
     if packet.dst not in self.mac_to_port:
