@@ -83,14 +83,14 @@ class LoadBalancer (EventMixin):
       msg = of.ofp_flow_mod()
       # overwrite the destination IP and MAC address to be that of the selected server
 
-      msg.match = of.ofp_match(nw_dst = IPAddr(self.VIP), nw_src = IPAddr(client_ip))
+      #msg.match = of.ofp_match(nw_dst = IPAddr(self.VIP), nw_src = IPAddr(client_ip))
+      msg.match = of.ofp_match.from_packet(incoming_packet, event.port)
       server.port = self.mac_to_port[EthAddr(server.mac)]
       log.debug("found %s at port %s" % (server.mac, server.port))
       msg.actions.append(of.ofp_action_dl_addr.set_dst(EthAddr(server.mac)))
       msg.actions.append(of.ofp_action_nw_addr.set_dst(IPAddr(server.ip)))
       msg.actions.append(of.ofp_action_output(port = server.port))
-      msg.buffer_id = event.ofp.buffer_id
-      msg.in_port = event.port
+      msg.data = event.ofp
       msg.idle_timeout = IDLE_TIMEOUT
       msg.hard_timeout = HARD_TIMEOUT
       log.debug("installing flow to rewrite dest (%s, %s) for packets from %s" % (server.mac, server.ip, client_ip))
