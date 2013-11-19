@@ -14,8 +14,8 @@ import time
 
 log = core.getLogger()
 
-HARD_TIMEOUT = 30
-IDLE_TIMEOUT = 30
+HARD_TIMEOUT = of.OFP_FLOW_PERMANENT
+IDLE_TIMEOUT = of.OFP_FLOW_PERMANENT
 
 class Server ():
   def __init__(self, ip_address, mac_address, port, currentLoad):
@@ -46,6 +46,7 @@ class LoadBalancer (EventMixin):
     self.server_mac_to_ip[4] = Server("10.0.0.10", "00:00:00:00:00:0a", 10, 0)    
     self.nextHost = 0
     self.client_ips = {}
+    self.client_to_server = {}
     self.listenTo(connection)
 
 
@@ -59,7 +60,10 @@ class LoadBalancer (EventMixin):
     packet = event.parse()
 
     def getNextAvailableServer(clientIP):
+      if clientIP in self.client_to_server:
+        return self.client_to_server[clientIP]
       server = self.server_mac_to_ip[self.nextHost]
+      self.client_to_server[clientIP] = server
       self.nextHost = (self.nextHost + 1) % len(self.server_mac_to_ip)
       log.debug("going to load balance client %s to server %s" % (clientIP, server.ip))
       return server
@@ -83,7 +87,6 @@ class LoadBalancer (EventMixin):
       msg = of.ofp_flow_mod()
       # overwrite the destination IP and MAC address to be that of the selected server
 
-      #msg.match = of.ofp_match(nw_dst = IPAddr(self.VIP), nw_src = IPAddr(client_ip))
       msg.match = of.ofp_match.from_packet(incoming_packet, event.port)
       server.port = self.mac_to_port[EthAddr(server.mac)]
       log.debug("found %s at port %s" % (server.mac, server.port))
@@ -94,20 +97,7 @@ class LoadBalancer (EventMixin):
       msg.idle_timeout = IDLE_TIMEOUT
       msg.hard_timeout = HARD_TIMEOUT
       log.debug("installing flow to rewrite dest (%s, %s) for packets from %s" % (server.mac, server.ip, client_ip))
-      self.connection.send(msg)
-
-      # add another rule to overwrite a packet in the reverse direction
-      # if destination IP is client IP, then the source IP,mac becomes the VIP,mac
-      # msg = of.ofp_flow_mod()
-      # msg.match = of.ofp_match(nw_dst = IPAddr(client_ip), nw_src = IPAddr(server.ip))
-      # client_port = self.mac_to_port[incoming_packet.src]
-      # msg.actions.append(of.ofp_action_output(port = server.port))
-      # msg.actions.append(of.ofp_action_dl_addr.set_src(EthAddr(self.VIP_MAC)))
-      # msg.actions.append(of.ofp_action_nw_addr.set_src(IPAddr(self.VIP)))
-      # msg.idle_timeout = IDLE_TIMEOUT
-      # msg.hard_timeout = HARD_TIMEOUT
-      # log.debug("installing flow to rewrite src to (%s, %s) for packets from %s" % (self.VIP_MAC, self.VIP, server.ip))
-      # self.connection.send(msg)      
+      self.connection.send(msg)  
       return
 
     # updating out mac to port mapping
@@ -137,9 +127,9 @@ class LoadBalancer (EventMixin):
       msg = of.ofp_flow_mod()
       msg.match = of.ofp_match.from_packet(packet, event.port)
       destination_port = self.mac_to_port[packet.dst]
-      msg.actions.append(of.ofp_action_output(port = destination_port))
       msg.actions.append(of.ofp_action_dl_addr.set_src(EthAddr(self.VIP_MAC)))
       msg.actions.append(of.ofp_action_nw_addr.set_src(IPAddr(self.VIP)))
+      msg.actions.append(of.ofp_action_output(port = destination_port))
       msg.data = event.ofp
       msg.idle_timeout = IDLE_TIMEOUT
       msg.hard_timeout = HARD_TIMEOUT
