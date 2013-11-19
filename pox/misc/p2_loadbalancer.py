@@ -36,7 +36,7 @@ class LoadBalancer (EventMixin):
     self.mac_to_port = {}
     self.ip_to_mac_arp = {}
     self.VIP = IPAddr("10.0.0.100")
-    self.VIP_MAC = EthAddr("FF:FF:FF:FF:FF:FF")
+    self.VIP_MAC = EthAddr("FF:FF:FF:FF:FF:00")
     self.mac_to_ip = {}
     self.server_mac_to_ip = [None] * 5
     self.server_mac_to_ip[0] = Server("10.0.0.6", "00:00:00:00:00:06", 6, 0)
@@ -120,22 +120,22 @@ class LoadBalancer (EventMixin):
       log.debug("Dropping a packet of type %s" % (packet.type,))
       drop()
       return
-    log.debug ("got a packet: %s" % (packet.dst,));
+    log.debug ("got a packet: %s->%s" % (packet.src,packet.dst));
 
     if (packet.type == packet.ARP_TYPE):
-      log.debug("ERROR: shouldn't happen ******* got an arp packet")     
-      pass
+      log.debug("ERROR: shouldn't happen ******* got an arp packet. we're using static arp entries")     
+      return
 
-    if packet.dst == self.VIP_MAC:
+    if packet.next.dstip == self.VIP:
       log.debug("got a request to VIP")
       # find a host to go to
       server_to_use = getNextAvailableServer(packet.next.srcip)
       # install a rule to send it to the next available server
       installRuleForToLoadBalance(server_to_use, packet.next.srcip, packet)
       return
-    else:
+    else: #assume that the packet is going from servers to one of the clients
       msg = of.ofp_flow_mod()
-      msg.match = of.ofp_match(nw_dst=packet.next.dstip, nw_src = packet.next.srcip)
+      msg.match = of.ofp_match.from_packet(packet, event.port)
       destination_port = self.mac_to_port[packet.dst]
       msg.actions.append(of.ofp_action_output(port = destination_port))
       msg.actions.append(of.ofp_action_dl_addr.set_src(EthAddr(self.VIP_MAC)))
