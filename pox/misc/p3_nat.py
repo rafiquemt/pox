@@ -16,9 +16,11 @@ IP address and port to any external IP address and port.
 """
 
 from pox.core import core
+from pox.lib.addresses import IPAddr, EthAddr
 import pox.openflow.libopenflow_01 as of
 from pox.lib.revent import *
 from pox.lib.util import dpidToStr
+from pox.lib.packet import packet_utils
 import time
 
 log = core.getLogger()
@@ -33,12 +35,17 @@ class NAT (EventMixin):
     log.debug("Got a new connection for %s" % (connection.dpid,))
     self.connection= connection
     self.mac_to_port = {}
-    self.ip_to_mac_arp = {}
+    self.INTERNAL_IP = IPAddr("10.0.1.1")
+    self.EXTERNAL_IP = IPAddr("172.64.3.1")
+    self.ports_min = 1024
+    self.ports_max = 65535
+    self.ports_in_use = []
+    self.current_free_port = self.ports_min
     self.listenTo(connection)
 
   def _handle_PacketIn (self, event):
 
-    log.debug("got packet on my nat")
+    log.debug("got a packet on my nat")
     # parsing the input packet
     packet = event.parse()
 
@@ -60,16 +67,19 @@ class NAT (EventMixin):
     # updating out mac to port mapping
     self.mac_to_port[packet.src] = event.port
 
-    if packet.type == packet.LLDP_TYPE or packet.type == 0x86DD:
+    if packet.type == packet.LLDP_TYPE or packet.type == packet.IPV6_TYPE:
       # Drop LLDP packets 
       # Drop IPv6 packets
-      #log.debug("Dropping a packet of type %s" % (packet.type,))
+      log.debug("Dropping a packet of type %s" % (ethtype_to_str(packet.type)))
+      drop()
+      return
+    if packet.next.protocol = packet.next.UDP_PROTOCOL:
+      log.debug("Dropping a UDP packet: %s" % (packet.next.UDP_PROTOCOL))
       drop()
       return
     log.debug ("got a packet");
     if (packet.type == packet.ARP_TYPE):
       log.debug("got an arp packet")
-      
       return
 
     if packet.dst not in self.mac_to_port:
