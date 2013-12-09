@@ -23,6 +23,7 @@ from pox.lib.revent import *
 from pox.lib.util import dpidToStr
 from pox.lib.packet import packet_utils
 from threading import Timer
+from pox.lib.packet import *
 import time
 
 
@@ -39,6 +40,7 @@ class NAT (EventMixin):
     self.connection= connection
     self.mac_to_port = {}
     self.INTERNAL_IP = IPAddr("10.0.1.1")
+    self.INTERNAL_NETWORK_RANGE = "10.0.1.1/24"
     self.EXTERNAL_IP = IPAddr("172.64.3.1")
     self.MAC = "00-00-00-00-00-01"
     self.EXTERNAL_NETWORK_PORT = 4
@@ -105,9 +107,6 @@ class NAT (EventMixin):
         if port not in self.mappings:
           return port
 
-    # updating out mac to port mapping
-    self.mac_to_port[packet.src] = event.port
-
     if packet.type == packet.LLDP_TYPE or packet.type == packet.IPV6_TYPE:
       # Drop LLDP packets 
       # Drop IPv6 packets
@@ -122,6 +121,40 @@ class NAT (EventMixin):
     if (packet.type == packet.ARP_TYPE):
       log.debug("got an arp packet")
       return
+    
+    # *************************************************** START
+    if isForExternalNetwork(packet.next):
+      # if tcp connection is in process, keep state of tcp connection and keep forwarding packets as necessary
+      # get a port mapping on the NAT. timeout that mapping in 300 seconds
+      
+      # if tcp connection is established
+      # install a rule that timesout after 7440 seconds
+      pass
+    elif packet.next.dstip.toStr() == self.EXTERNAL_IP:
+      # packet is destined for a client behind the NAT
+      pass
+    elif packet.next.dstip.in_network(self.INTERNAL_NETWORK_RANGE):
+      # updating out mac to port mapping
+      self.mac_to_port[packet.src] = event.port
+      # do l2 learning switch rules
+      if packet.dst not in self.mac_to_port:
+        flood("Port for %s unknown -- flooding" % (packet.dst,))
+      else:
+        # install a rule in the switch and send packet to its destination
+        toInstallPort = self.mac_to_port[packet.dst]
+        msg = of.ofp_flow_mod()
+        #msg.match = of.ofp_match.from_packet(packet, event.port)
+        msg.match = of.ofp_match(dl_dst = packet.dst)
+        msg.actions.append(of.ofp_action_output(port = toInstallPort))
+        msg.data = event.ofp
+        log.debug("installing flow for %s.%i -> %s.%i" %
+          (packet.src, event.port, packet.dst, toInstallPort))
+        self.connection.send(msg)
+        pass
+      pass
+
+    # ==================================================== END
+
     log.debug("destination %s" % (packet.next.dstip.toStr()))
     if packet.next.dstip.toStr() == "172.64.3.1":
       log.debug("re-writing packet destined for nat")
@@ -139,19 +172,11 @@ class NAT (EventMixin):
       rewriteSourceForNat()
       return
 
-    if packet.dst not in self.mac_to_port:
-      flood("Port for %s unknown -- flooding" % (packet.dst,))
-    else:
-      # install a rule in the switch and send packet to its destination
-      toInstallPort = self.mac_to_port[packet.dst]
-      msg = of.ofp_flow_mod()
-      #msg.match = of.ofp_match.from_packet(packet, event.port)
-      msg.match = of.ofp_match(dl_dst = packet.dst)
-      msg.actions.append(of.ofp_action_output(port = toInstallPort))
-      msg.data = event.ofp
-      log.debug("installing flow for %s.%i -> %s.%i" %
-        (packet.src, event.port, packet.dst, toInstallPort))
-      self.connection.send(msg)
+
+
+  def isForExternalNetwork (self, ip_packet):
+    if isinstance(ip_packet, ipv4):
+      return (ip_packet.dstip.toStr() != "172.64.3.1" and ip_packet.dstip.in_network("172.64.3.0/24"))
 
 class LearningSwitch (EventMixin):
 
@@ -160,6 +185,7 @@ class LearningSwitch (EventMixin):
     self.connection= connection
     self.mac_to_port = {}
     self.ip_to_mac_arp = {}
+    self.BRIDGE_EXTERNAL_NETWORK_RANGE = "10.0.1.1/24"
     self.listenTo(connection)
 
   def _handle_PacketIn (self, event):
@@ -192,6 +218,11 @@ class LearningSwitch (EventMixin):
       log.debug("Dropping a packet of type %s" % (packet.type,))
       drop()
       return
+    if packet.next.dstip.in_network(self.BRIDGE_EXTERNAL_NETWORK_RANGE):
+      log.debug("Dropping packet with destination in external network wrt bridge: %s" % (packet.next.dstip.toStr()))
+      drop()
+      return
+
     log.debug ("got a packet");
     if (packet.type == packet.ARP_TYPE):
       log.debug("got an arp packet")
