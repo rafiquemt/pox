@@ -131,7 +131,8 @@ class NAT (EventMixin):
       # install a rule that timesout after 7440 seconds
       pass
     elif packet.next.dstip.toStr() == self.EXTERNAL_IP:
-      # packet is destined for a client behind the NAT
+      # packet is destined for a client behind the NAT, 
+      # basically modify destination MAC and IP based on reverse bindings already established. 
       pass
     elif packet.next.dstip.in_network(self.INTERNAL_NETWORK_RANGE):
       # updating out mac to port mapping
