@@ -2,8 +2,8 @@
 Author Tariq Rafique
 based on work by Junaid Khalid (CSEP561 site)
 
-This is an L2 learning switch written directly against the OpenFlow library.
-It is derived from POX l2_learning.py only for IPv4.
+This is a NAT and a learning switch
+
 """
 """
 Your NAT MUST have an "Endpoint-Independent Mapping" behavior for TCP. 
@@ -18,6 +18,7 @@ IP address and port to any external IP address and port.
 from pox.core import core
 from pox.lib.addresses import IPAddr, EthAddr
 import pox.openflow.libopenflow_01 as of
+from pox.openflow import *
 from pox.lib.revent import *
 from pox.lib.util import dpidToStr
 from pox.lib.packet import packet_utils
@@ -40,6 +41,7 @@ class NAT (EventMixin):
     self.INTERNAL_IP = IPAddr("10.0.1.1")
     self.EXTERNAL_IP = IPAddr("172.64.3.1")
     self.MAC = "00-00-00-00-00-01"
+    self.EXTERNAL_NETWORK_PORT = 4
     self.ports_min = 10000
     self.ports_max = 65535
     # natport = (clientip, clientport) 
@@ -55,11 +57,12 @@ class NAT (EventMixin):
     self.listenTo(connection)
 
   def _handle_PacketIn (self, event):
+    if isinstance(event, PacketIn):
+      log.debug("Hey!")
 
     log.debug("got a packet on my nat")
     # parsing the input packet
-    packet = event.parse()
-
+    packet = event.parse()    
     def flood (message = None):
       if message is not None: log.debug(message)
       msg = of.ofp_packet_out()
@@ -76,24 +79,24 @@ class NAT (EventMixin):
       self.connection.send(msg)
 
     def rewriteSourceForNat ():
-      log.debug("packet destined for outside")
-      ip_packet = packet.next
-      tcp_packet = ip_packet.next
-      if (ip_packet.srcip, tcp_packet.srcport)
       # create a mapping on the controller for nat port to client port and ip pair
       # rewrite
       # + source port to be free port on NAT
       # + source IP to be NAT external IP
       # + source MAC address ????
       # + destination MAC address from our static arp table
-      msg = of.ofp_packet_out()
-      msg.actions.append(of.ofp_action_nw_addr.set_src(IPAddr(self.EXTERNAL_IP)))
-      #remove this ?!!!
-      msg.actions.append(of.ofp_action_dl_addr.set_dst(self.arp_entries[packet.next.dstip]))     
-      msg.actions.append(of.ofp_action_output(port = of.OFPP_FLOOD))
-      msg.buffer_id = event.ofp.buffer_id
-      msg.in_port = event.port
-      self.connection.send(msg)
+      ip_packet = packet.next
+      tcp_packet = ip_packet.next
+      if (ip_packet.srcip, tcp_packet.srcport) in self.mappings:
+        msg = of.ofp_packet_out()
+        msg.actions.append(of.ofp_action_dl_addr.set_dst(self.arp_entries[ip_packet.dstip]))
+        msg.actions.append(of.ofp_action_nw_addr.set_src(self.EXTERNAL_IP))
+        msg.actions.append(of.ofp_action_tp_port.set_src(self.mappings[ip_packet.srcip, tcp_packet.srcport]))
+        msg.actions.append(of.ofp_action_output(port = self.EXTERNAL_NETWORK_PORT))
+        msg.buffer_id = event.ofp.buffer_id
+        msg.in_port = event.port
+        self.connection.send(msg)
+        pass
 
     def getFreePortOnNat(outbound_packet):
       while True:
@@ -108,7 +111,7 @@ class NAT (EventMixin):
     if packet.type == packet.LLDP_TYPE or packet.type == packet.IPV6_TYPE:
       # Drop LLDP packets 
       # Drop IPv6 packets
-      #log.debug("Dropping a packet of type %s" % (ethtype_to_str(packet.type)))
+      log.debug("Dropping a packet of type %s" % (packet_utils.ethtype_to_str(packet.type)))
       drop()
       return
     # if packet.next.protocol == packet.next.UDP_PROTOCOL:
@@ -215,14 +218,16 @@ class p3_nat (EventMixin):
     self.listenTo(core.openflow)
 
   def _handle_ConnectionUp (self, event):
-    switch_dpid = dpidToStr(event.dpid)
-    log.debug("Switch %s has come up.", dpidToStr(event.dpid))
-    if switch_dpid != "00-00-00-00-00-01":
-      log.debug("Creating NAT")
-      NAT(event.connection)
-    else:
-      log.debug("Creating learning switch")
-      LearningSwitch(event.connection)
+    conn = event.connection
+    if isinstance(conn, of_01.Connection):
+      switch_dpid = dpidToStr(event.dpid)
+      log.debug("Switch %s has come up.", dpidToStr(event.dpid))
+      if switch_dpid != "00-00-00-00-00-01":
+        log.debug("Creating NAT")
+        NAT(conn)
+      else:
+        log.debug("Creating learning switch")
+        LearningSwitch(conn)
 
 
 def launch ():

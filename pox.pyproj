@@ -14,7 +14,7 @@
     <VisualStudioVersion Condition="'$(VisualStudioVersion)' == ''">10.0</VisualStudioVersion>
     <VSToolsPath Condition="'$(VSToolsPath)' == ''">$(MSBuildExtensionsPath32)\Microsoft\VisualStudio\v$(VisualStudioVersion)</VSToolsPath>
     <LaunchProvider>Standard Python launcher</LaunchProvider>
-    <CommandLineArguments>log.level --DEBUG misc.p1_learning</CommandLineArguments>
+    <CommandLineArguments>log.level --DEBUG misc.p3_nat</CommandLineArguments>
     <InterpreterPath />
     <InterpreterArguments />
     <EnableNativeCodeDebugging>False</EnableNativeCodeDebugging>
@@ -27,6 +27,9 @@
     <Compile Include="pox\boot.py" />
     <Compile Include="pox\core.py" />
     <Compile Include="pox\license.py" />
+    <Compile Include="pox\misc\nat.py" />
+    <Compile Include="pox\misc\p2_loadbalancer.py" />
+    <Compile Include="pox\misc\p3_nat.py" />
     <Compile Include="pox\py.py" />
     <Compile Include="pox\tk.py" />
     <Compile Include="pox\__init__.py" />
