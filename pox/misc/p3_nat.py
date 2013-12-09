@@ -21,7 +21,9 @@ import pox.openflow.libopenflow_01 as of
 from pox.lib.revent import *
 from pox.lib.util import dpidToStr
 from pox.lib.packet import packet_utils
+from threading import Timer
 import time
+
 
 log = core.getLogger()
 
@@ -37,9 +39,18 @@ class NAT (EventMixin):
     self.mac_to_port = {}
     self.INTERNAL_IP = IPAddr("10.0.1.1")
     self.EXTERNAL_IP = IPAddr("172.64.3.1")
-    self.ports_min = 1024
+    self.MAC = "00-00-00-00-00-01"
+    self.ports_min = 10000
     self.ports_max = 65535
-    self.ports_in_use = []
+    # natport = (clientip, clientport) 
+    self.mappings = {}
+    self.nat_ports = {}
+    self.arp_entries = {}
+    self.arp_entries[IPAddr("172.64.3.21")] = EthAddr("00:00:00:00:00:04")
+    self.arp_entries[IPAddr("172.64.3.22")] = EthAddr("00:00:00:00:00:05")
+    self.arp_entries[IPAddr("10.0.1.101")] = EthAddr("00:00:00:00:00:01")
+    self.arp_entries[IPAddr("10.0.1.102")] = EthAddr("00:00:00:00:00:02")
+    self.arp_entries[IPAddr("10.0.1.103")] = EthAddr("00:00:00:00:00:03")    
     self.current_free_port = self.ports_min
     self.listenTo(connection)
 
@@ -64,22 +75,65 @@ class NAT (EventMixin):
       # this msg has no actions, so the pack wil be dropped
       self.connection.send(msg)
 
+    def rewriteSourceForNat ():
+      log.debug("packet destined for outside")
+      ip_packet = packet.next
+      tcp_packet = ip_packet.next
+      if (ip_packet.srcip, tcp_packet.srcport)
+      # create a mapping on the controller for nat port to client port and ip pair
+      # rewrite
+      # + source port to be free port on NAT
+      # + source IP to be NAT external IP
+      # + source MAC address ????
+      # + destination MAC address from our static arp table
+      msg = of.ofp_packet_out()
+      msg.actions.append(of.ofp_action_nw_addr.set_src(IPAddr(self.EXTERNAL_IP)))
+      #remove this ?!!!
+      msg.actions.append(of.ofp_action_dl_addr.set_dst(self.arp_entries[packet.next.dstip]))     
+      msg.actions.append(of.ofp_action_output(port = of.OFPP_FLOOD))
+      msg.buffer_id = event.ofp.buffer_id
+      msg.in_port = event.port
+      self.connection.send(msg)
+
+    def getFreePortOnNat(outbound_packet):
+      while True:
+        port = random.randint(self.ports_min, self.ports_max)
+        log.debug("getFreePortOnNat: Trying to find port %d" % (port))
+        if port not in self.mappings:
+          return port
+
     # updating out mac to port mapping
     self.mac_to_port[packet.src] = event.port
 
     if packet.type == packet.LLDP_TYPE or packet.type == packet.IPV6_TYPE:
       # Drop LLDP packets 
       # Drop IPv6 packets
-      log.debug("Dropping a packet of type %s" % (ethtype_to_str(packet.type)))
+      #log.debug("Dropping a packet of type %s" % (ethtype_to_str(packet.type)))
       drop()
       return
-    if packet.next.protocol = packet.next.UDP_PROTOCOL:
-      log.debug("Dropping a UDP packet: %s" % (packet.next.UDP_PROTOCOL))
-      drop()
-      return
+    # if packet.next.protocol == packet.next.UDP_PROTOCOL:
+    #   log.debug("Dropping a UDP packet: %s" % (packet.next.UDP_PROTOCOL))
+    #   drop()
+    #   return
     log.debug ("got a packet");
     if (packet.type == packet.ARP_TYPE):
       log.debug("got an arp packet")
+      return
+    log.debug("destination %s" % (packet.next.dstip.toStr()))
+    if packet.next.dstip.toStr() == "172.64.3.1":
+      log.debug("re-writing packet destined for nat")
+      msg = of.ofp_packet_out()
+      #remove this ?!!!
+      msg.actions.append(of.ofp_action_dl_addr.set_dst(EthAddr("00:00:00:00:00:01")))
+      msg.actions.append(of.ofp_action_nw_addr.set_dst(IPAddr("10.0.1.101")))           
+      msg.actions.append(of.ofp_action_output(port = of.OFPP_FLOOD))
+      msg.buffer_id = event.ofp.buffer_id
+      msg.in_port = event.port
+      self.connection.send(msg)      
+      return
+    # something destined for the outside
+    if packet.next.dstip.in_network("172.64.3.0/24"):
+      rewriteSourceForNat()
       return
 
     if packet.dst not in self.mac_to_port:
@@ -163,7 +217,7 @@ class p3_nat (EventMixin):
   def _handle_ConnectionUp (self, event):
     switch_dpid = dpidToStr(event.dpid)
     log.debug("Switch %s has come up.", dpidToStr(event.dpid))
-    if switch_dpid == "00-00-00-00-00-01":
+    if switch_dpid != "00-00-00-00-00-01":
       log.debug("Creating NAT")
       NAT(event.connection)
     else:
