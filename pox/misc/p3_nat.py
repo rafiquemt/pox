@@ -122,7 +122,20 @@ class NAT (EventMixin):
       else:
         return None
 
-    def installRuleToRewriteSourceToBeNAT(ip_packet, tcp_packet):
+    def installRuleToRewriteSourceToBeNAT(ip_packet, tcp_packet, nat_port):
+      msg = of.ofp_flow_mod()
+
+      msg.match = of.ofp_match.from_packet(packet, event.port)
+      server.port = self.EXTERNAL_NETWORK_PORT
+      log.debug("found %s at port %s" % (server.mac, server.port))
+      msg.actions.append(of.ofp_action_dl_addr.set_dst(EthAddr(server.mac)))
+      msg.actions.append(of.ofp_action_nw_addr.set_dst(IPAddr(server.ip)))
+      msg.actions.append(of.ofp_action_output(port = server.port))
+      msg.data = event.ofp
+      msg.idle_timeout = IDLE_TIMEOUT
+      msg.hard_timeout = HARD_TIMEOUT
+      log.debug("installing flow to rewrite dest (%s, %s) for packets from %s" % (server.mac, server.ip, client_ip))
+      self.connection.send(msg)  
 
 
     if packet.type == packet.LLDP_TYPE or packet.type == packet.IPV6_TYPE:
@@ -135,11 +148,12 @@ class NAT (EventMixin):
     #   log.debug("Dropping a UDP packet: %s" % (packet.next.UDP_PROTOCOL))
     #   drop()
     #   return
-    log.debug ("got a packet");
 
     if (packet.type == packet.ARP_TYPE):
       log.debug("got an arp packet")
       return
+
+    log.debug ("got a packet on port: %s" % (event.port))
     
     ip_packet = packet.next
     tcp_packet = ip_packet.next
