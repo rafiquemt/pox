@@ -51,8 +51,11 @@ class NAT (EventMixin):
     self.ports_min = 10000
     self.ports_max = 65535
     # natport = (clientip, clientport) 
-    self.forward_mappings = {} # (srcip, srcport, dstip, dstport) ->(TCPState, NatPort#)
+    self.tcp_state = {} # (srcip, srcport, dstip, dstport) -> TCPState
+    self.forward_mappings = {} # (srcip, srcport) -> NatPort#
     self.reverse_mappings = {} # NatPort -> (srcip, srcport)
+    self.inprocess_timeout = 10
+    self.established_timeout = 15
 
     self.arp_entries = {}
     self.arp_entries[IPAddr("172.64.3.21")] = EthAddr("00:00:00:00:00:04")
@@ -85,16 +88,14 @@ class NAT (EventMixin):
       # this msg has no actions, so the pack wil be dropped
       self.connection.send(msg)
 
-    def rewriteSourceForNat ():
+    def rewriteSourceForNat (ip_packet, tcp_packet):
       # create a mapping on the controller for nat port to client port and ip pair
       # rewrite
       # + source port to be free port on NAT
       # + source IP to be NAT external IP
       # + source MAC address ????
       # + destination MAC address from our static arp table
-      ip_packet = packet.next
-      tcp_packet = ip_packet.next
-      if (ip_packet.srcip, tcp_packet.srcport) in self.mappings:
+      if (ip_packet.srcip, tcp_packet.srcport) in self.forward_mappings:
         msg = of.ofp_packet_out()
         msg.actions.append(of.ofp_action_dl_addr.set_dst(self.arp_entries[ip_packet.dstip]))
         msg.actions.append(of.ofp_action_nw_addr.set_src(self.EXTERNAL_IP))
@@ -109,12 +110,20 @@ class NAT (EventMixin):
       while True:
         port = random.randint(self.ports_min, self.ports_max)
         log.debug("getFreePortOnNat: Trying to find port %d" % (port))
-        if port not in self.mappings:
+        if port not in self.reverse_mappings:
           return port
 
     def getTCPMapping(ip_packet):
       tcp_packet = ip_packet.next
-      if (ip_packet.srcip, tcp_packet.srcport)
+      if (ip_packet.srcip, tcp_packet.srcport, ip_packet.dstip, tcp_packet.dstport) in self.forward_mappings:
+        return (self.tcp_state[(ip_packet.srcip, tcp_packet.srcport, ip_packet.dstip, tcp_packet.dstport)], "forward")
+      elif (ip_packet.dstip, tcp_packet.dstport, ip_packet.srcip, tcp_packet.srcport) in self.forward_mappings:
+        return (self.tcp_state[(ip_packet.dstip, tcp_packet.dstport, ip_packet.srcip, tcp_packet.srcport)], "reverse")
+      else:
+        return None
+
+    def installRuleToRewriteSourceToBeNAT(ip_packet, tcp_packet):
+
 
     if packet.type == packet.LLDP_TYPE or packet.type == packet.IPV6_TYPE:
       # Drop LLDP packets 
@@ -127,16 +136,47 @@ class NAT (EventMixin):
     #   drop()
     #   return
     log.debug ("got a packet");
+
     if (packet.type == packet.ARP_TYPE):
       log.debug("got an arp packet")
       return
     
+    ip_packet = packet.next
+    tcp_packet = ip_packet.next
+    srcdst_quad = (ip_packet.srcip, tcp_packet.srcport, ip_packet.dstip, tcp_packet.dstport)
+    srcdst_pair = (ip_packet.srcip, tcp_packet.srcport)
     # *************************************************** START
-    if isForExternalNetwork(packet.next):
+    if self.isForExternalNetwork(ip_packet):
       # if tcp connection is in process, keep state of tcp connection and keep forwarding packets as necessary
       # get a port mapping on the NAT. timeout that mapping in 300 seconds
-      ip_packet = packet.next
-      tcp_packet = ip_packet.next
+      tcp_mapping_found = getTCPMapping(ip_packet)
+      if mapping_found is None
+        if tcp_packet.SYN:
+          nat_port = getFreePortOnNat(ip_packet)
+          self.tcp_state[srcdst_quad] = TCPState.INPROCESS_SYN1_SENT
+          self.forward_mappings[srcdst_pair] = nat_port
+          self.reverse_mappings[nat_port] = srcdst_pair
+          pass
+        else:
+          log.debug("********** TCP messed up******")
+          pass
+      else:
+        if tcp_mapping_found[0] == TCPState.ESTABLISHED_ACK1_SENT:
+          log.debug("shouldnt see anything here. got a packet for an established tcp connection")
+          pass
+        elif tcp_mapping_found[1] == "forward":
+          if tcp_packet.ACK:
+            nat_port = self.forward_mappings[srcdst_pair]
+            # the packet is an ack in the forward direction, then connection moves to established state
+            self.tcp_state[srcdst_quad] = TCPState.ESTABLISHED_ACK1_SENT
+            installRuleToRewriteSourceToBeNAT(ip_packet, tcp_packet, nat_port)
+            pass
+          pass
+        pass
+
+      # schedule a timer to kill this connection in the longer timeout
+
+
 
       
       # if tcp connection is established
@@ -166,23 +206,6 @@ class NAT (EventMixin):
         pass
       pass
     # =================================================== END
-
-    log.debug("destination %s" % (packet.next.dstip.toStr()))
-    if packet.next.dstip.toStr() == "172.64.3.1":
-      log.debug("re-writing packet destined for nat")
-      msg = of.ofp_packet_out()
-      #remove this ?!!!
-      msg.actions.append(of.ofp_action_dl_addr.set_dst(EthAddr("00:00:00:00:00:01")))
-      msg.actions.append(of.ofp_action_nw_addr.set_dst(IPAddr("10.0.1.101")))           
-      msg.actions.append(of.ofp_action_output(port = of.OFPP_FLOOD))
-      msg.buffer_id = event.ofp.buffer_id
-      msg.in_port = event.port
-      self.connection.send(msg)      
-      return
-    # something destined for the outside
-    if packet.next.dstip.in_network("172.64.3.0/24"):
-      rewriteSourceForNat()
-      return
 
 
 
