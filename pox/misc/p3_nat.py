@@ -32,6 +32,10 @@ log = core.getLogger()
 HARD_TIMEOUT = 30
 IDLE_TIMEOUT = 30
 
+class TCPSTATE:
+  INPROCESS_SYN1_SENT = 0
+  ESTABLISHED_ACK1_SENT = 1
+
 class NAT (EventMixin):
 
   def __init__ (self,connection):
@@ -47,8 +51,9 @@ class NAT (EventMixin):
     self.ports_min = 10000
     self.ports_max = 65535
     # natport = (clientip, clientport) 
-    self.mappings = {}
-    self.nat_ports = {}
+    self.forward_mappings = {} # (srcip, srcport, dstip, dstport) ->(TCPState, NatPort#)
+    self.reverse_mappings = {} # NatPort -> (srcip, srcport)
+
     self.arp_entries = {}
     self.arp_entries[IPAddr("172.64.3.21")] = EthAddr("00:00:00:00:00:04")
     self.arp_entries[IPAddr("172.64.3.22")] = EthAddr("00:00:00:00:00:05")
@@ -107,6 +112,10 @@ class NAT (EventMixin):
         if port not in self.mappings:
           return port
 
+    def getTCPMapping(ip_packet):
+      tcp_packet = ip_packet.next
+      if (ip_packet.srcip, tcp_packet.srcport)
+
     if packet.type == packet.LLDP_TYPE or packet.type == packet.IPV6_TYPE:
       # Drop LLDP packets 
       # Drop IPv6 packets
@@ -126,6 +135,9 @@ class NAT (EventMixin):
     if isForExternalNetwork(packet.next):
       # if tcp connection is in process, keep state of tcp connection and keep forwarding packets as necessary
       # get a port mapping on the NAT. timeout that mapping in 300 seconds
+      ip_packet = packet.next
+      tcp_packet = ip_packet.next
+
       
       # if tcp connection is established
       # install a rule that timesout after 7440 seconds
@@ -153,8 +165,7 @@ class NAT (EventMixin):
         self.connection.send(msg)
         pass
       pass
-
-    # ==================================================== END
+    # =================================================== END
 
     log.debug("destination %s" % (packet.next.dstip.toStr()))
     if packet.next.dstip.toStr() == "172.64.3.1":
