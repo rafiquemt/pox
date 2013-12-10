@@ -237,6 +237,8 @@ class LearningSwitch (EventMixin):
     self.mac_to_port = {}
     self.ip_to_mac_arp = {}
     self.BRIDGE_EXTERNAL_NETWORK_RANGE = "10.0.1.0/24"
+    self.BRIDGE_NAT_PORT = 3
+    self.BRIDGE_NAT_IP = "172.64.3.1"
     self.listenTo(connection)
 
   def _handle_PacketIn (self, event):
