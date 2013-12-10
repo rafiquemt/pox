@@ -11,6 +11,7 @@ You can refer to the RFC for this requirement, but here is a quick informal summ
 The NAT reuses the port binding for subsequent sessions initiated from the same internal 
 IP address and port to any external IP address and port.
 
+client1 wget http://172.64.3.21:8000/index.html
 
 
 """
@@ -25,6 +26,7 @@ from pox.lib.packet import packet_utils
 from threading import Timer
 from pox.lib.packet import *
 import time
+import random
 
 
 log = core.getLogger()
@@ -44,7 +46,7 @@ class NAT (EventMixin):
     self.connection= connection
     self.mac_to_port = {}
     self.INTERNAL_IP = IPAddr("10.0.1.1")
-    self.INTERNAL_NETWORK_RANGE = "10.0.1.1/24"
+    self.INTERNAL_NETWORK_RANGE = "10.0.1.0/24"
     self.EXTERNAL_IP = IPAddr("172.64.3.1")
     self.MAC = "00-00-00-00-00-01"
     self.EXTERNAL_NETWORK_PORT = 4
@@ -67,10 +69,6 @@ class NAT (EventMixin):
     self.listenTo(connection)
 
   def _handle_PacketIn (self, event):
-    if isinstance(event, PacketIn):
-      log.debug("Hey!")
-
-    log.debug("got a packet on my nat")
     # parsing the input packet
     packet = event.parse()    
     def flood (message = None):
@@ -88,7 +86,7 @@ class NAT (EventMixin):
       # this msg has no actions, so the pack wil be dropped
       self.connection.send(msg)
 
-    def rewriteSourceForNat (ip_packet, tcp_packet):
+    def rewriteSourceForNat (ip_packet, tcp_packet, nat_port):
       # create a mapping on the controller for nat port to client port and ip pair
       # rewrite
       # + source port to be free port on NAT
@@ -124,17 +122,15 @@ class NAT (EventMixin):
 
     def installRuleToRewriteSourceToBeNAT(ip_packet, tcp_packet, nat_port):
       msg = of.ofp_flow_mod()
-
       msg.match = of.ofp_match.from_packet(packet, event.port)
-      server.port = self.EXTERNAL_NETWORK_PORT
-      log.debug("found %s at port %s" % (server.mac, server.port))
-      msg.actions.append(of.ofp_action_dl_addr.set_dst(EthAddr(server.mac)))
-      msg.actions.append(of.ofp_action_nw_addr.set_dst(IPAddr(server.ip)))
-      msg.actions.append(of.ofp_action_output(port = server.port))
+      msg.actions.append(of.ofp_action_dl_addr.set_dst(self.arp_entries[ip_packet.dstip]))
+      msg.actions.append(of.ofp_action_nw_addr.set_src(self.EXTERNAL_IP))
+      msg.actions.append(of.ofp_action_tp_port.set_src(nat_port))
+      msg.actions.append(of.ofp_action_output(port = self.EXTERNAL_NETWORK_PORT))
       msg.data = event.ofp
-      msg.idle_timeout = IDLE_TIMEOUT
-      msg.hard_timeout = HARD_TIMEOUT
-      log.debug("installing flow to rewrite dest (%s, %s) for packets from %s" % (server.mac, server.ip, client_ip))
+      msg.idle_timeout = 5
+      msg.hard_timeout = 5
+      log.debug("installing flow to rewrite src to be (%s, %s) for packets from (%s, %s)" % (self.EXTERNAL_IP, nat_port, ip_packet.srcip, tcp_packet.srcport))
       self.connection.send(msg)  
 
 
@@ -153,37 +149,43 @@ class NAT (EventMixin):
       log.debug("got an arp packet")
       return
 
-    log.debug ("got a packet on port: %s" % (event.port))
+    log.debug ("got a packet on my nat at port: %s" % (event.port))
     
     ip_packet = packet.next
-    tcp_packet = ip_packet.next
-    srcdst_quad = (ip_packet.srcip, tcp_packet.srcport, ip_packet.dstip, tcp_packet.dstport)
-    srcdst_pair = (ip_packet.srcip, tcp_packet.srcport)
     # *************************************************** START
     if self.isForExternalNetwork(ip_packet):
+
+      tcp_packet = ip_packet.next
+      srcdst_quad = (ip_packet.srcip, tcp_packet.srcport, ip_packet.dstip, tcp_packet.dstport)
+      srcdst_pair = (ip_packet.srcip, tcp_packet.srcport)
       # if tcp connection is in process, keep state of tcp connection and keep forwarding packets as necessary
       # get a port mapping on the NAT. timeout that mapping in 300 seconds
       tcp_mapping_found = getTCPMapping(ip_packet)
-      if mapping_found is None
+      if tcp_mapping_found is None:
         if tcp_packet.SYN:
           nat_port = getFreePortOnNat(ip_packet)
-          self.tcp_state[srcdst_quad] = TCPState.INPROCESS_SYN1_SENT
+          self.tcp_state[srcdst_quad] = TCPSTATE.INPROCESS_SYN1_SENT
           self.forward_mappings[srcdst_pair] = nat_port
           self.reverse_mappings[nat_port] = srcdst_pair
+          installRuleToRewriteSourceToBeNAT(ip_packet, tcp_packet, nat_port)
           pass
         else:
           log.debug("********** TCP messed up******")
           pass
       else:
-        if tcp_mapping_found[0] == TCPState.ESTABLISHED_ACK1_SENT:
+        if tcp_mapping_found[0] == TCPSTATE.ESTABLISHED_ACK1_SENT:
           log.debug("shouldnt see anything here. got a packet for an established tcp connection")
           pass
         elif tcp_mapping_found[1] == "forward":
+          log.debug("shouldnt see anything here. got a packet for an established tcp connection")
           if tcp_packet.ACK:
             nat_port = self.forward_mappings[srcdst_pair]
             # the packet is an ack in the forward direction, then connection moves to established state
-            self.tcp_state[srcdst_quad] = TCPState.ESTABLISHED_ACK1_SENT
+            self.tcp_state[srcdst_quad] = TCPSTATE.ESTABLISHED_ACK1_SENT
             installRuleToRewriteSourceToBeNAT(ip_packet, tcp_packet, nat_port)
+            pass
+          else:
+
             pass
           pass
         pass
@@ -234,7 +236,7 @@ class LearningSwitch (EventMixin):
     self.connection= connection
     self.mac_to_port = {}
     self.ip_to_mac_arp = {}
-    self.BRIDGE_EXTERNAL_NETWORK_RANGE = "10.0.1.1/24"
+    self.BRIDGE_EXTERNAL_NETWORK_RANGE = "10.0.1.0/24"
     self.listenTo(connection)
 
   def _handle_PacketIn (self, event):
@@ -272,12 +274,12 @@ class LearningSwitch (EventMixin):
       drop()
       return
 
-    log.debug ("got a packet");
     if (packet.type == packet.ARP_TYPE):
       log.debug("got an arp packet")
       
       return
 
+    log.debug ("got a packet on the bridge at port: %s" % (event.port));
     if packet.dst not in self.mac_to_port:
       flood("Port for %s unknown -- flooding" % (packet.dst,))
     else:
