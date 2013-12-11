@@ -33,6 +33,7 @@ log = core.getLogger()
 
 HARD_TIMEOUT = 30
 IDLE_TIMEOUT = 30
+NAT_MAC =  EthAddr("00-00-00-00-01-00")
 
 class TCPSTATE:
   INPROCESS_SYN1_SENT = 0
@@ -48,7 +49,7 @@ class NAT (EventMixin):
     self.INTERNAL_IP = IPAddr("10.0.1.1")
     self.INTERNAL_NETWORK_RANGE = "10.0.1.0/24"
     self.EXTERNAL_IP = IPAddr("172.64.3.1")
-    self.MAC = "00-00-00-00-00-01"
+    self.MAC = NAT_MAC
     self.EXTERNAL_NETWORK_PORT = 4
     self.ports_min = 10000
     self.ports_max = 65535
@@ -124,6 +125,7 @@ class NAT (EventMixin):
       msg = of.ofp_flow_mod()
       msg.match = of.ofp_match.from_packet(packet, event.port)
       msg.actions.append(of.ofp_action_dl_addr.set_dst(self.arp_entries[ip_packet.dstip]))
+      msg.actions.append(of.ofp_action_dl_addr.set_src(self.MAC))
       msg.actions.append(of.ofp_action_nw_addr.set_src(self.EXTERNAL_IP))
       msg.actions.append(of.ofp_action_tp_port.set_src(nat_port))
       msg.actions.append(of.ofp_action_output(port = self.EXTERNAL_NETWORK_PORT))
@@ -236,9 +238,12 @@ class LearningSwitch (EventMixin):
     self.connection= connection
     self.mac_to_port = {}
     self.ip_to_mac_arp = {}
+    self.ip_to_port = {}
     self.BRIDGE_EXTERNAL_NETWORK_RANGE = "10.0.1.0/24"
     self.BRIDGE_NAT_PORT = 3
+    self.mac_to_port[NAT_MAC] = self.BRIDGE_NAT_PORT
     self.BRIDGE_NAT_IP = "172.64.3.1"
+    self.ip_to_port[IPAddr(self.BRIDGE_NAT_PORT)] = self.BRIDGE_NAT_PORT
     self.listenTo(connection)
 
   def _handle_PacketIn (self, event):
@@ -282,6 +287,13 @@ class LearningSwitch (EventMixin):
       return
 
     log.debug ("got a packet on the bridge at port: %s" % (event.port));
+
+    if packet.dst not in self.mac_to_port:
+      if packet.next.dstip == self.BRIDGE_NAT_IP:
+        self.mac_to_port[packet.dst] = self.BRIDGE_NAT_PORT
+        pass
+      pass
+          
     if packet.dst not in self.mac_to_port:
       flood("Port for %s unknown -- flooding" % (packet.dst,))
     else:
