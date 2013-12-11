@@ -27,6 +27,7 @@ from threading import Timer
 from pox.lib.packet import *
 import time
 import random
+import threading
 
 
 log = core.getLogger()
@@ -237,25 +238,36 @@ class NAT (EventMixin):
     ip_packet = packet.next
     tcp_packet = ip_packet.next
     # *************************************************** START NAT stuff
-    if self.isForExternalNetwork(ip_packet):
-      srcdst_quad = (ip_packet.srcip, tcp_packet.srcport, ip_packet.dstip, tcp_packet.dstport)
-      srcdst_pair = (ip_packet.srcip, tcp_packet.srcport)
-      if srcdst_pair not in self.forward_mappings:
-        nat_port = getFreePortOnNat(ip_packet)
-        self.forward_mappings[srcdst_pair] = nat_port
-        self.reverse_mappings[nat_port] = srcdst_pair
-        pass
-      else:
-        nat_port = self.forward_mappings[srcdst_pair]
-        pass
+    srcdst_quad = (ip_packet.srcip, tcp_packet.srcport, ip_packet.dstip, tcp_packet.dstport)
+    srcdst_pair = (ip_packet.srcip, tcp_packet.srcport)
 
-      installRuleToRewriteSourceToBeNAT(ip_packet, tcp_packet, nat_port)
-    elif packet.next.dstip.toStr() == self.EXTERNAL_IP:
-      # packet is destined for a client behind the NAT, 
-      # basically modify destination MAC and IP based on reverse bindings already established. 
-      installRuleToRewriteDestinationToBeClient(ip_packet, tcp_packet)
+    #self.tcp_state = {} # (srcip, srcport, dstip, dstport) -> TCPState
+    curr_state = self.tcp_state[srcdst_quad]
+    if curr_state is None:
+
+      pass
+    else:
+      if self.isForExternalNetwork(ip_packet):
+        if srcdst_pair not in self.forward_mappings:
+          nat_port = getFreePortOnNat(ip_packet)
+          self.forward_mappings[srcdst_pair] = nat_port
+          self.reverse_mappings[nat_port] = srcdst_pair
+          pass
+        else:
+          nat_port = self.forward_mappings[srcdst_pair]
+          pass
+
+        installRuleToRewriteSourceToBeNAT(ip_packet, tcp_packet, nat_port)
+      elif packet.next.dstip.toStr() == self.EXTERNAL_IP:
+        # packet is destined for a client behind the NAT, 
+        # basically modify destination MAC and IP based on reverse bindings already established. 
+        installRuleToRewriteDestinationToBeClient(ip_packet, tcp_packet)
+        pass
       pass
 
+
+    def installPersistentMappings():
+      return
     # =================================================== END
 
 
