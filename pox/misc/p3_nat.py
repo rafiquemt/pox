@@ -121,6 +121,30 @@ class NAT (EventMixin):
       else:
         return None
 
+    def installRuleToRewriteDestinationToBeClient(ip_packet, tcp_packet):
+      clientip_port = self.reverse_mappings[tcp_packet.dstport]
+      if clientip_port is None:
+        log.debug("Dropping an outside packet at the NAT as we don't have any existing mapping to a client")
+        drop()
+        return
+
+      client_ip = clientip_port[0]
+      client_port = clientip_port[1]
+
+      msg = of.ofp_flow_mod()
+      msg.match = of.ofp_match.from_packet(packet, event.port)
+      # change destination ip, mac and port to be that of the client that initiated this request
+      destination_mac = self.arp_entries[client_ip]
+      msg.actions.append(of.ofp_action_dl_addr.set_dst(destination_mac))
+      msg.actions.append(of.ofp_action_nw_addr.set_dst(client_ip))
+      msg.actions.append(of.ofp_action_tp_port.set_dst(client_port))
+      msg.actions.append(of.ofp_action_output(port = self.mac_to_port[destination_mac]))
+      msg.data = event.ofp
+      msg.idle_timeout = 5
+      msg.hard_timeout = 5
+      log.debug("installing flow to rewrite dst to be (%s, %s) for packets from (%s, %s) for nat port %s" % (client_ip, client_port, ip_packet.srcip, tcp_packet.srcport, tcp_packet.dstport))
+      self.connection.send(msg)  
+
     def installRuleToRewriteSourceToBeNAT(ip_packet, tcp_packet, nat_port):
       msg = of.ofp_flow_mod()
       msg.match = of.ofp_match.from_packet(packet, event.port)
@@ -134,7 +158,6 @@ class NAT (EventMixin):
       msg.hard_timeout = 5
       log.debug("installing flow to rewrite src to be (%s, %s) for packets from (%s, %s)" % (self.EXTERNAL_IP, nat_port, ip_packet.srcip, tcp_packet.srcport))
       self.connection.send(msg)  
-
 
     if packet.type == packet.LLDP_TYPE or packet.type == packet.IPV6_TYPE:
       # Drop LLDP packets 
@@ -203,6 +226,8 @@ class NAT (EventMixin):
     elif packet.next.dstip.toStr() == self.EXTERNAL_IP:
       # packet is destined for a client behind the NAT, 
       # basically modify destination MAC and IP based on reverse bindings already established. 
+      tcp_packet = ip_packet.next
+      installRuleToRewriteDestinationToBeClient(ip_packet, tcp_packet)
       pass
     elif packet.next.dstip.in_network(self.INTERNAL_NETWORK_RANGE):
       # updating out mac to port mapping
@@ -293,7 +318,7 @@ class LearningSwitch (EventMixin):
         self.mac_to_port[packet.dst] = self.BRIDGE_NAT_PORT
         pass
       pass
-          
+
     if packet.dst not in self.mac_to_port:
       flood("Port for %s unknown -- flooding" % (packet.dst,))
     else:
