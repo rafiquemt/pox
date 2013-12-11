@@ -72,6 +72,9 @@ class NAT (EventMixin):
   def _handle_PacketIn (self, event):
     # parsing the input packet
     packet = event.parse()    
+    # updating out mac to port mapping
+    self.mac_to_port[packet.src] = event.port
+
     def flood (message = None):
       if message is not None: log.debug(message)
       msg = of.ofp_packet_out()
@@ -131,8 +134,8 @@ class NAT (EventMixin):
       client_ip = clientip_port[0]
       client_port = clientip_port[1]
 
-      msg = of.ofp_flow_mod()
-      msg.match = of.ofp_match.from_packet(packet, event.port)
+      msg = of.ofp_packet_out()
+      #msg.match = of.ofp_match.from_packet(packet, event.port)
       # change destination ip, mac and port to be that of the client that initiated this request
       destination_mac = self.arp_entries[client_ip]
       msg.actions.append(of.ofp_action_dl_addr.set_dst(destination_mac))
@@ -140,22 +143,22 @@ class NAT (EventMixin):
       msg.actions.append(of.ofp_action_tp_port.set_dst(client_port))
       msg.actions.append(of.ofp_action_output(port = self.mac_to_port[destination_mac]))
       msg.data = event.ofp
-      msg.idle_timeout = 5
-      msg.hard_timeout = 5
+      # msg.idle_timeout = 5
+      # msg.hard_timeout = 5
       log.debug("installing flow to rewrite dst to be (%s, %s) for packets from (%s, %s) for nat port %s" % (client_ip, client_port, ip_packet.srcip, tcp_packet.srcport, tcp_packet.dstport))
       self.connection.send(msg)  
 
     def installRuleToRewriteSourceToBeNAT(ip_packet, tcp_packet, nat_port):
-      msg = of.ofp_flow_mod()
-      msg.match = of.ofp_match.from_packet(packet, event.port)
+      msg = of.ofp_packet_out()
+      # msg.match = of.ofp_match.from_packet(packet, event.port)
       msg.actions.append(of.ofp_action_dl_addr.set_dst(self.arp_entries[ip_packet.dstip]))
       msg.actions.append(of.ofp_action_dl_addr.set_src(self.MAC))
       msg.actions.append(of.ofp_action_nw_addr.set_src(self.EXTERNAL_IP))
       msg.actions.append(of.ofp_action_tp_port.set_src(nat_port))
       msg.actions.append(of.ofp_action_output(port = self.EXTERNAL_NETWORK_PORT))
       msg.data = event.ofp
-      msg.idle_timeout = 5
-      msg.hard_timeout = 5
+      # msg.idle_timeout = 5
+      # msg.hard_timeout = 5
       log.debug("installing flow to rewrite src to be (%s, %s) for packets from (%s, %s)" % (self.EXTERNAL_IP, nat_port, ip_packet.srcip, tcp_packet.srcport))
       self.connection.send(msg)  
 
@@ -179,50 +182,18 @@ class NAT (EventMixin):
     ip_packet = packet.next
     # *************************************************** START
     if self.isForExternalNetwork(ip_packet):
-
       tcp_packet = ip_packet.next
       srcdst_quad = (ip_packet.srcip, tcp_packet.srcport, ip_packet.dstip, tcp_packet.dstport)
       srcdst_pair = (ip_packet.srcip, tcp_packet.srcport)
-      # if tcp connection is in process, keep state of tcp connection and keep forwarding packets as necessary
-      # get a port mapping on the NAT. timeout that mapping in 300 seconds
-      tcp_mapping_found = getTCPMapping(ip_packet)
-      if tcp_mapping_found is None:
-        if tcp_packet.SYN:
-          nat_port = getFreePortOnNat(ip_packet)
-          self.tcp_state[srcdst_quad] = TCPSTATE.INPROCESS_SYN1_SENT
-          self.forward_mappings[srcdst_pair] = nat_port
-          self.reverse_mappings[nat_port] = srcdst_pair
-          installRuleToRewriteSourceToBeNAT(ip_packet, tcp_packet, nat_port)
-          pass
-        else:
-          log.debug("********** TCP messed up******")
-          pass
-      else:
-        if tcp_mapping_found[0] == TCPSTATE.ESTABLISHED_ACK1_SENT:
-          log.debug("shouldnt see anything here. got a packet for an established tcp connection")
-          pass
-        elif tcp_mapping_found[1] == "forward":
-          log.debug("shouldnt see anything here. got a packet for an established tcp connection")
-          if tcp_packet.ACK:
-            nat_port = self.forward_mappings[srcdst_pair]
-            # the packet is an ack in the forward direction, then connection moves to established state
-            self.tcp_state[srcdst_quad] = TCPSTATE.ESTABLISHED_ACK1_SENT
-            installRuleToRewriteSourceToBeNAT(ip_packet, tcp_packet, nat_port)
-            pass
-          else:
-
-            pass
-          pass
+      if srcdst_pair not in self.forward_mappings:
+        nat_port = getFreePortOnNat(ip_packet)
+        self.forward_mappings[srcdst_pair] = nat_port
+        self.reverse_mappings[nat_port] = srcdst_pair
         pass
-
-      # schedule a timer to kill this connection in the longer timeout
-
-
-
-      
-      # if tcp connection is established
-      # install a rule that timesout after 7440 seconds
-      pass
+      else:
+        nat_port = self.forward_mappings[srcdst_pair]
+        pass
+      installRuleToRewriteSourceToBeNAT(ip_packet, tcp_packet, nat_port)
     elif packet.next.dstip.toStr() == self.EXTERNAL_IP:
       # packet is destined for a client behind the NAT, 
       # basically modify destination MAC and IP based on reverse bindings already established. 
@@ -230,8 +201,6 @@ class NAT (EventMixin):
       installRuleToRewriteDestinationToBeClient(ip_packet, tcp_packet)
       pass
     elif packet.next.dstip.in_network(self.INTERNAL_NETWORK_RANGE):
-      # updating out mac to port mapping
-      self.mac_to_port[packet.src] = event.port
       # do l2 learning switch rules
       if packet.dst not in self.mac_to_port:
         flood("Port for %s unknown -- flooding" % (packet.dst,))
