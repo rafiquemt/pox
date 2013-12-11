@@ -285,6 +285,9 @@ class NAT (EventMixin):
     curr_state = self.tcp_state.get(srcdst_quad)
     forward_direction_conn = True
 
+    installPersistentMappings()
+    return
+    
     # find if we're tracking this tcp state and in which direction
     if curr_state is None:
       curr_state = self.tcp_state.get(srcdst_reverse_quad)
@@ -336,7 +339,7 @@ class LearningSwitch (EventMixin):
   def _handle_PacketIn (self, event):
 
     # parsing the input packet
-    log.debug("got a packet on the bridge")
+    log.debug ("got a packet on the bridge at port: %s" % (event.port));
     packet = event.parse()
 
     def flood (message = None):
@@ -372,8 +375,6 @@ class LearningSwitch (EventMixin):
       log.debug("got an arp packet")
       
       return
-
-    log.debug ("got a packet on the bridge at port: %s" % (event.port));
 
     if packet.dst not in self.mac_to_port:
       if packet.next.dstip == self.BRIDGE_NAT_IP:
