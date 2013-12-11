@@ -33,6 +33,7 @@ log = core.getLogger()
 
 HARD_TIMEOUT = 30
 IDLE_TIMEOUT = 30
+
 NAT_MAC =  EthAddr("00-00-00-00-01-00")
 
 class TCPSTATE:
@@ -57,8 +58,8 @@ class NAT (EventMixin):
     self.tcp_state = {} # (srcip, srcport, dstip, dstport) -> TCPState
     self.forward_mappings = {} # (srcip, srcport) -> NatPort#
     self.reverse_mappings = {} # NatPort -> (srcip, srcport)
-    self.inprocess_timeout = 10
-    self.established_timeout = 15
+    self.inprocess_timeout = 2
+    self.established_idle_timeout = 2
 
     self.arp_entries = {}
     self.arp_entries[IPAddr("172.64.3.21")] = EthAddr("00:00:00:00:00:04")
@@ -69,6 +70,16 @@ class NAT (EventMixin):
     self.current_free_port = self.ports_min
     self.listenTo(connection)
 
+  def _handle_FlowRemoved (self, event):
+    log.debug("removing flow %s", event.ofp)
+    # if rule for reverse packet on NAT, then grab tp_dst to get reverse binding to remove
+    match = event.ofp.match
+    if (match.nw_dst.toStr() == self.EXTERNAL_IP):
+      clientip_port = self.reverse_mappings.pop(match.tp_dst)
+      log.debug("**** removed reverse mapping at port %d" % match.tp_dst)
+    else:
+      log.debug(match)
+    
   def _handle_PacketIn (self, event):
     # parsing the input packet
     packet = event.parse()    
@@ -89,24 +100,6 @@ class NAT (EventMixin):
       msg.in_port = event.port
       # this msg has no actions, so the pack wil be dropped
       self.connection.send(msg)
-
-    def rewriteSourceForNat (ip_packet, tcp_packet, nat_port):
-      # create a mapping on the controller for nat port to client port and ip pair
-      # rewrite
-      # + source port to be free port on NAT
-      # + source IP to be NAT external IP
-      # + source MAC address ????
-      # + destination MAC address from our static arp table
-      if (ip_packet.srcip, tcp_packet.srcport) in self.forward_mappings:
-        msg = of.ofp_packet_out()
-        msg.actions.append(of.ofp_action_dl_addr.set_dst(self.arp_entries[ip_packet.dstip]))
-        msg.actions.append(of.ofp_action_nw_addr.set_src(self.EXTERNAL_IP))
-        msg.actions.append(of.ofp_action_tp_port.set_src(self.mappings[ip_packet.srcip, tcp_packet.srcport]))
-        msg.actions.append(of.ofp_action_output(port = self.EXTERNAL_NETWORK_PORT))
-        msg.buffer_id = event.ofp.buffer_id
-        msg.in_port = event.port
-        self.connection.send(msg)
-        pass
 
     def getFreePortOnNat(outbound_packet):
       while True:
@@ -134,8 +127,9 @@ class NAT (EventMixin):
       client_ip = clientip_port[0]
       client_port = clientip_port[1]
 
-      msg = of.ofp_packet_out()
-      #msg.match = of.ofp_match.from_packet(packet, event.port)
+      msg = of.ofp_flow_mod()
+      msg.flags |= of.OFPFF_SEND_FLOW_REM
+      msg.match = of.ofp_match.from_packet(packet, event.port)
       # change destination ip, mac and port to be that of the client that initiated this request
       destination_mac = self.arp_entries[client_ip]
       msg.actions.append(of.ofp_action_dl_addr.set_dst(destination_mac))
@@ -143,23 +137,57 @@ class NAT (EventMixin):
       msg.actions.append(of.ofp_action_tp_port.set_dst(client_port))
       msg.actions.append(of.ofp_action_output(port = self.mac_to_port[destination_mac]))
       msg.data = event.ofp
-      # msg.idle_timeout = 5
-      # msg.hard_timeout = 5
+      msg.idle_timeout = self.established_idle_timeout
       log.debug("installing flow to rewrite dst to be (%s, %s) for packets from (%s, %s) for nat port %s" % (client_ip, client_port, ip_packet.srcip, tcp_packet.srcport, tcp_packet.dstport))
       self.connection.send(msg)  
 
-    def installRuleToRewriteSourceToBeNAT(ip_packet, tcp_packet, nat_port):
+    def rewriteDestinationToBeClient(ip_packet, tcp_packet):
+      clientip_port = self.reverse_mappings[tcp_packet.dstport]
+      if clientip_port is None:
+        log.debug("Dropping an outside packet at the NAT as we don't have any existing mapping to a client")
+        drop()
+        return
+
+      client_ip = clientip_port[0]
+      client_port = clientip_port[1]
+
       msg = of.ofp_packet_out()
-      # msg.match = of.ofp_match.from_packet(packet, event.port)
+      msg.match = of.ofp_match.from_packet(packet, event.port)
+      # change destination ip, mac and port to be that of the client that initiated this request
+      destination_mac = self.arp_entries[client_ip]
+      msg.actions.append(of.ofp_action_dl_addr.set_dst(destination_mac))
+      msg.actions.append(of.ofp_action_nw_addr.set_dst(client_ip))
+      msg.actions.append(of.ofp_action_tp_port.set_dst(client_port))
+      msg.actions.append(of.ofp_action_output(port = self.mac_to_port[destination_mac]))
+      msg.data = event.ofp
+      log.debug("rewrite dst to be (%s, %s) for packets from (%s, %s) for nat port %s" % (client_ip, client_port, ip_packet.srcip, tcp_packet.srcport, tcp_packet.dstport))
+      self.connection.send(msg)  
+
+    def installRuleToRewriteSourceToBeNAT(ip_packet, tcp_packet, nat_port):
+      #msg = of.ofp_packet_out()
+      msg = of.ofp_flow_mod()
+      msg.flags |= of.OFPFF_SEND_FLOW_REM
+      msg.match = of.ofp_match.from_packet(packet, event.port)
       msg.actions.append(of.ofp_action_dl_addr.set_dst(self.arp_entries[ip_packet.dstip]))
       msg.actions.append(of.ofp_action_dl_addr.set_src(self.MAC))
       msg.actions.append(of.ofp_action_nw_addr.set_src(self.EXTERNAL_IP))
       msg.actions.append(of.ofp_action_tp_port.set_src(nat_port))
       msg.actions.append(of.ofp_action_output(port = self.EXTERNAL_NETWORK_PORT))
       msg.data = event.ofp
-      # msg.idle_timeout = 5
-      # msg.hard_timeout = 5
+      msg.idle_timeout = self.established_idle_timeout
       log.debug("installing flow to rewrite src to be (%s, %s) for packets from (%s, %s)" % (self.EXTERNAL_IP, nat_port, ip_packet.srcip, tcp_packet.srcport))
+      self.connection.send(msg) 
+
+    def rewriteSourceToBeNAT(ip_packet, tcp_packet, nat_port):
+      msg = of.ofp_packet_out()
+      msg.match = of.ofp_match.from_packet(packet, event.port)
+      msg.actions.append(of.ofp_action_dl_addr.set_dst(self.arp_entries[ip_packet.dstip]))
+      msg.actions.append(of.ofp_action_dl_addr.set_src(self.MAC))
+      msg.actions.append(of.ofp_action_nw_addr.set_src(self.EXTERNAL_IP))
+      msg.actions.append(of.ofp_action_tp_port.set_src(nat_port))
+      msg.actions.append(of.ofp_action_output(port = self.EXTERNAL_NETWORK_PORT))
+      msg.data = event.ofp
+      log.debug("rewrite src to be (%s, %s) for packets from (%s, %s)" % (self.EXTERNAL_IP, nat_port, ip_packet.srcip, tcp_packet.srcport))
       self.connection.send(msg)  
 
     if packet.type == packet.LLDP_TYPE or packet.type == packet.IPV6_TYPE:
@@ -193,6 +221,7 @@ class NAT (EventMixin):
       else:
         nat_port = self.forward_mappings[srcdst_pair]
         pass
+
       installRuleToRewriteSourceToBeNAT(ip_packet, tcp_packet, nat_port)
     elif packet.next.dstip.toStr() == self.EXTERNAL_IP:
       # packet is destined for a client behind the NAT, 
