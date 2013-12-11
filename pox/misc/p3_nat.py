@@ -150,7 +150,7 @@ class NAT (EventMixin):
       self.connection.send(msg)  
 
     def rewriteDestinationToBeClient(ip_packet, tcp_packet):
-      clientip_port = self.reverse_mappings[tcp_packet.dstport]
+      clientip_port = self.reverse_mappings.get(tcp_packet.dstport)
       if clientip_port is None:
         log.debug("Dropping an outside packet at the NAT as we don't have any existing mapping to a client")
         drop()
@@ -239,14 +239,10 @@ class NAT (EventMixin):
     tcp_packet = ip_packet.next
     # *************************************************** START NAT stuff
     srcdst_quad = (ip_packet.srcip, tcp_packet.srcport, ip_packet.dstip, tcp_packet.dstport)
+    srcdst_reverse_quad = (ip_packet.dstip, tcp_packet.dstport, ip_packet.srcip, tcp_packet.srcport)
     srcdst_pair = (ip_packet.srcip, tcp_packet.srcport)
 
-    #self.tcp_state = {} # (srcip, srcport, dstip, dstport) -> TCPState
-    curr_state = self.tcp_state[srcdst_quad]
-    if curr_state is None:
-
-      pass
-    else:
+    def installPersistentMappings():
       if self.isForExternalNetwork(ip_packet):
         if srcdst_pair not in self.forward_mappings:
           nat_port = getFreePortOnNat(ip_packet)
@@ -262,12 +258,58 @@ class NAT (EventMixin):
         # packet is destined for a client behind the NAT, 
         # basically modify destination MAC and IP based on reverse bindings already established. 
         installRuleToRewriteDestinationToBeClient(ip_packet, tcp_packet)
+        pass    
+      return
+
+    def routePacketsToFromNAT():
+      if self.isForExternalNetwork(ip_packet):
+        if srcdst_pair not in self.forward_mappings:
+          nat_port = getFreePortOnNat(ip_packet)
+          self.forward_mappings[srcdst_pair] = nat_port
+          self.reverse_mappings[nat_port] = srcdst_pair
+          pass
+        else:
+          nat_port = self.forward_mappings[srcdst_pair]
+          pass
+
+        rewriteSourceToBeNAT(ip_packet, tcp_packet, nat_port)
+      elif packet.next.dstip.toStr() == self.EXTERNAL_IP:
+        # packet is destined for a client behind the NAT, 
+        # basically modify destination MAC and IP based on reverse bindings already established. 
+        rewriteDestinationToBeClient(ip_packet, tcp_packet)
+        pass    
+      return
+      return
+
+    #self.tcp_state = {} # (srcip, srcport, dstip, dstport) -> TCPState
+    curr_state = self.tcp_state.get(srcdst_quad)
+    forward_direction_conn = True
+
+    # find if we're tracking this tcp state and in which direction
+    if curr_state is None:
+      curr_state = self.tcp_state.get(srcdst_reverse_quad)
+      if curr_state is not None:
+        forward_direction_conn = False
         pass
       pass
 
-
-    def installPersistentMappings():
-      return
+    nat_port = None
+    if curr_state is None:
+      self.tcp_state[srcdst_quad] = TCPSTATE.INPROCESS_SYN1_SENT
+      routePacketsToFromNAT()
+      pass
+    elif curr_state == TCPSTATE.INPROCESS_SYN1_SENT:
+      if forward_direction_conn and tcp_packet.ACK:
+        self.tcp_state[srcdst_quad] = TCPSTATE.ESTABLISHED_ACK1_SENT
+        installPersistentMappings()
+        pass
+      else:
+        routePacketsToFromNAT()
+      pass
+    elif curr_state == TCPSTATE.ESTABLISHED_ACK1_SENT:
+      installPersistentMappings()
+    else:
+      log.debug("**** came across an UNKNOWN TCPSTATE ** Shouldn't happen ***")
     # =================================================== END
 
 
