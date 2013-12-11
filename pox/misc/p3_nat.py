@@ -31,8 +31,8 @@ import random
 
 log = core.getLogger()
 
-HARD_TIMEOUT = 30
-IDLE_TIMEOUT = 30
+HARD_TIMEOUT = 5
+IDLE_TIMEOUT = 5
 
 NAT_MAC =  EthAddr("00-00-00-00-01-00")
 
@@ -49,6 +49,7 @@ class NAT (EventMixin):
     self.mac_to_port = {}
     self.INTERNAL_IP = IPAddr("10.0.1.1")
     self.INTERNAL_NETWORK_RANGE = "10.0.1.0/24"
+    self.EXTERNAL_NETWORK_RANGE = "172.64.3.0/24"
     self.EXTERNAL_IP = IPAddr("172.64.3.1")
     self.MAC = NAT_MAC
     self.EXTERNAL_NETWORK_PORT = 4
@@ -71,15 +72,21 @@ class NAT (EventMixin):
     self.listenTo(connection)
 
   def _handle_FlowRemoved (self, event):
-    log.debug("removing flow %s", event.ofp)
-    # if rule for reverse packet on NAT, then grab tp_dst to get reverse binding to remove
     match = event.ofp.match
-    if (match.nw_dst.toStr() == self.EXTERNAL_IP):
+    if (match.nw_dst.toStr() == self.EXTERNAL_IP.toStr()):
       clientip_port = self.reverse_mappings.pop(match.tp_dst)
       log.debug("**** removed reverse mapping at port %d" % match.tp_dst)
+    elif match.nw_dst.in_network(self.EXTERNAL_NETWORK_RANGE):
+      client_ip = match.nw_src
+      client_port = match.tp_src
+      nat_port = self.forward_mappings.pop((client_ip, client_port))
+      log.debug("**** removed forward mapping (%s,%d->%d)" % 
+        (client_ip, client_port, nat_port))
+      pass
     else:
-      log.debug(match)
-    
+      log.debug("removing random flow. shouldn't happen!")
+    return
+
   def _handle_PacketIn (self, event):
     # parsing the input packet
     packet = event.parse()    
@@ -104,7 +111,7 @@ class NAT (EventMixin):
     def getFreePortOnNat(outbound_packet):
       while True:
         port = random.randint(self.ports_min, self.ports_max)
-        log.debug("getFreePortOnNat: Trying to find port %d" % (port))
+        log.debug("getFreePortOnNat: Trying to see if this port is free: %d" % (port))
         if port not in self.reverse_mappings:
           return port
 
@@ -206,11 +213,31 @@ class NAT (EventMixin):
       return
 
     log.debug ("got a packet on my nat at port: %s" % (event.port))
-    
+  
+    if packet.next.dstip.in_network(self.INTERNAL_NETWORK_RANGE):
+      # do l2 learning switch rules
+      if packet.dst not in self.mac_to_port:
+        flood("Port for %s unknown -- flooding" % (packet.dst,))
+      else:
+        # install a rule in the switch and send packet to its destination
+        toInstallPort = self.mac_to_port[packet.dst]
+        msg = of.ofp_flow_mod()
+        #msg.match = of.ofp_match.from_packet(packet, event.port)
+        msg.match = of.ofp_match(dl_dst = packet.dst)
+        msg.actions.append(of.ofp_action_output(port = toInstallPort))
+        msg.data = event.ofp
+        msg.hard_timeout = HARD_TIMEOUT
+        msg.idle_timeout = IDLE_TIMEOUT
+        log.debug("installing flow for %s.%i -> %s.%i" %
+          (packet.src, event.port, packet.dst, toInstallPort))
+        self.connection.send(msg)
+        pass
+      return
+
     ip_packet = packet.next
-    # *************************************************** START
+    tcp_packet = ip_packet.next
+    # *************************************************** START NAT stuff
     if self.isForExternalNetwork(ip_packet):
-      tcp_packet = ip_packet.next
       srcdst_quad = (ip_packet.srcip, tcp_packet.srcport, ip_packet.dstip, tcp_packet.dstport)
       srcdst_pair = (ip_packet.srcip, tcp_packet.srcport)
       if srcdst_pair not in self.forward_mappings:
@@ -226,26 +253,9 @@ class NAT (EventMixin):
     elif packet.next.dstip.toStr() == self.EXTERNAL_IP:
       # packet is destined for a client behind the NAT, 
       # basically modify destination MAC and IP based on reverse bindings already established. 
-      tcp_packet = ip_packet.next
       installRuleToRewriteDestinationToBeClient(ip_packet, tcp_packet)
       pass
-    elif packet.next.dstip.in_network(self.INTERNAL_NETWORK_RANGE):
-      # do l2 learning switch rules
-      if packet.dst not in self.mac_to_port:
-        flood("Port for %s unknown -- flooding" % (packet.dst,))
-      else:
-        # install a rule in the switch and send packet to its destination
-        toInstallPort = self.mac_to_port[packet.dst]
-        msg = of.ofp_flow_mod()
-        #msg.match = of.ofp_match.from_packet(packet, event.port)
-        msg.match = of.ofp_match(dl_dst = packet.dst)
-        msg.actions.append(of.ofp_action_output(port = toInstallPort))
-        msg.data = event.ofp
-        log.debug("installing flow for %s.%i -> %s.%i" %
-          (packet.src, event.port, packet.dst, toInstallPort))
-        self.connection.send(msg)
-        pass
-      pass
+
     # =================================================== END
 
 
