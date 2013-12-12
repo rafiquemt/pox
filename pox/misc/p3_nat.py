@@ -66,7 +66,7 @@ class NAT (EventMixin):
     self.reverse_mappings = {} # NatPort -> (srcip, srcport)
     self.inprocess_timeout = INPROGRESS_TCP_TIMEOUT
     self.established_idle_timeout = ESTABLISHED_TCP_IDLE_TIMEOUT
-    self.filtering_list = ["172.64.3.22"] # don't allow communication with server2
+    self.filtering_list = [] #["172.64.3.22"] # don't allow communication with server2
 
     self.arp_entries = {}
     self.arp_entries[IPAddr("172.64.3.21")] = EthAddr("00:00:00:00:00:04")
