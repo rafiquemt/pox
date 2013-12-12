@@ -33,8 +33,10 @@ import threading
 
 log = core.getLogger()
 
-HARD_TIMEOUT = 5
-IDLE_TIMEOUT = 5
+HARD_TIMEOUT = 30
+IDLE_TIMEOUT = 30
+ESTABLISHED_TCP_IDLE_TIMEOUT = 7440
+INPROGRESS_TCP_TIMEOUT = 300
 
 NAT_MAC =  EthAddr("00-00-00-00-01-00")
 
@@ -62,8 +64,8 @@ class NAT (EventMixin):
     self.tcp_state = {} # (srcip, srcport, dstip, dstport) -> TCPState
     self.forward_mappings = {} # (srcip, srcport) -> NatPort#
     self.reverse_mappings = {} # NatPort -> (srcip, srcport)
-    self.inprocess_timeout = 2
-    self.established_idle_timeout = 2
+    self.inprocess_timeout = INPROGRESS_TCP_TIMEOUT
+    self.established_idle_timeout = ESTABLISHED_TCP_IDLE_TIMEOUT
 
     self.arp_entries = {}
     self.arp_entries[IPAddr("172.64.3.21")] = EthAddr("00:00:00:00:00:04")
@@ -75,16 +77,30 @@ class NAT (EventMixin):
     self.listenTo(connection)
 
   def _handle_FlowRemoved (self, event):
+    #clean up: 
+    # + forward, reverse mappings
+    # + tcp_state 
     match = event.ofp.match
     if (match.nw_dst.toStr() == self.EXTERNAL_IP.toStr()):
       clientip_port = self.reverse_mappings.pop(match.tp_dst)
       log.debug("**** removed reverse mapping at port %d" % match.tp_dst)
+      srcdst_quad = (match.nw_src, match.tp_src, clientip_port[0], clientip_port[1])
+      #clear out tcp state if it exists
+      if srcdst_quad in self.tcp_state:
+        self.tcp_state.pop(srcdst_quad)
+        log.debug("removing tcp state for: %s", srcdst_quad)
+      pass      
     elif match.nw_dst.in_network(self.EXTERNAL_NETWORK_RANGE):
       client_ip = match.nw_src
       client_port = match.tp_src
       nat_port = self.forward_mappings.pop((client_ip, client_port))
       log.debug("**** removed forward mapping (%s,%d->%d)" % 
         (client_ip, client_port, nat_port))
+      # clear out tcp state
+      srcdst_quad = (client_ip, client_port, match.nw_dst, match.tp_dst)
+      if srcdst_quad in self.tcp_state:
+        self.tcp_state.pop(srcdst_quad)
+        log.debug("removing tcp state for: %s", srcdst_quad)
       pass
     else:
       log.debug("removing random flow. shouldn't happen!")
@@ -280,6 +296,17 @@ class NAT (EventMixin):
         pass    
       return
 
+    def removeTCPStateBindingIfTimedout(srcdst_quad_toremove):
+      curr_state = self.tcp_state.get(srcdst_quad_toremove)
+      if curr_state is None:
+        log.debug("***** Problem in removeTCPStateBindingIfTimedout. can't find state for %s" % srcdst_quad_toremove)
+      elif curr_state == TCPSTATE.ESTABLISHED_ACK1_SENT or curr_state == TCPSTATE.ESTABLISHED_REVERSERULE_INSTALLED:
+        log.debug("Timer fired, but not removing established connection: %s", srcdst_quad_toremove)
+      else:
+        self.tcp_state.pop(srcdst_quad_toremove)
+        log.debug("Timer fired, removing in progress tcp connection: %s",srcdst_quad_toremove)
+      return
+
     #self.tcp_state = {} # (srcip, srcport, dstip, dstport) -> TCPState
 
     # replace nat IP with client IP if possible
@@ -308,6 +335,9 @@ class NAT (EventMixin):
       log.debug("TCPSTATE none")
       self.tcp_state[srcdst_quad] = TCPSTATE.INPROCESS_SYN1_SENT
       routePacketsToFromNAT()
+      #schedule a timer to kill this binding completely if connection isn't established
+      t = threading.Timer(self.inprocess_timeout, removeTCPStateBindingIfTimedout, [srcdst_quad] )
+      t.start()
       return
       pass
     elif curr_state == TCPSTATE.INPROCESS_SYN1_SENT:
