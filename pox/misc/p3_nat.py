@@ -66,6 +66,7 @@ class NAT (EventMixin):
     self.reverse_mappings = {} # NatPort -> (srcip, srcport)
     self.inprocess_timeout = INPROGRESS_TCP_TIMEOUT
     self.established_idle_timeout = ESTABLISHED_TCP_IDLE_TIMEOUT
+    self.filtering_list = ["172.64.3.22"] # don't allow communication with server2
 
     self.arp_entries = {}
     self.arp_entries[IPAddr("172.64.3.21")] = EthAddr("00:00:00:00:00:04")
@@ -247,6 +248,11 @@ class NAT (EventMixin):
       return
 
     ip_packet = packet.next
+    if (ip_packet.dstip.toStr() in self.filtering_list):
+      log.debug("Dropping packets destined for %s", ip_packet.dstip)
+      drop()
+      return
+      pass
     tcp_packet = ip_packet.next
     # *************************************************** START NAT stuff
     srcdst_quad = (ip_packet.srcip, tcp_packet.srcport, ip_packet.dstip, tcp_packet.dstport)
