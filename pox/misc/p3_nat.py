@@ -23,6 +23,7 @@ from pox.openflow import *
 from pox.lib.revent import *
 from pox.lib.util import dpidToStr
 from pox.lib.packet import packet_utils
+import pox.lib.packet as pkt
 from threading import Timer
 from pox.lib.packet import *
 import time
@@ -40,6 +41,7 @@ NAT_MAC =  EthAddr("00-00-00-00-01-00")
 class TCPSTATE:
   INPROCESS_SYN1_SENT = 0
   ESTABLISHED_ACK1_SENT = 1
+  ESTABLISHED_REVERSERULE_INSTALLED = 2
 
 class NAT (EventMixin):
 
@@ -116,15 +118,6 @@ class NAT (EventMixin):
         if port not in self.reverse_mappings:
           return port
 
-    def getTCPMapping(ip_packet):
-      tcp_packet = ip_packet.next
-      if (ip_packet.srcip, tcp_packet.srcport, ip_packet.dstip, tcp_packet.dstport) in self.forward_mappings:
-        return (self.tcp_state[(ip_packet.srcip, tcp_packet.srcport, ip_packet.dstip, tcp_packet.dstport)], "forward")
-      elif (ip_packet.dstip, tcp_packet.dstport, ip_packet.srcip, tcp_packet.srcport) in self.forward_mappings:
-        return (self.tcp_state[(ip_packet.dstip, tcp_packet.dstport, ip_packet.srcip, tcp_packet.srcport)], "reverse")
-      else:
-        return None
-
     def installRuleToRewriteDestinationToBeClient(ip_packet, tcp_packet):
       clientip_port = self.reverse_mappings[tcp_packet.dstport]
       if clientip_port is None:
@@ -137,7 +130,9 @@ class NAT (EventMixin):
 
       msg = of.ofp_flow_mod()
       msg.flags |= of.OFPFF_SEND_FLOW_REM
-      msg.match = of.ofp_match.from_packet(packet, event.port)
+      #msg.match = of.ofp_match.from_packet(packet, event.port)
+      msg.match = of.ofp_match(dl_type = pkt.ethernet.IP_TYPE, nw_proto = pkt.ipv4.TCP_PROTOCOL,
+        in_port = event.port, nw_src = ip_packet.srcip, nw_dst = ip_packet.dstip, tp_dst = tcp_packet.dstport)
       # change destination ip, mac and port to be that of the client that initiated this request
       destination_mac = self.arp_entries[client_ip]
       msg.actions.append(of.ofp_action_dl_addr.set_dst(destination_mac))
@@ -148,6 +143,20 @@ class NAT (EventMixin):
       msg.idle_timeout = self.established_idle_timeout
       log.debug("installing flow to rewrite dst to be (%s, %s) for packets from (%s, %s) for nat port %s" % (client_ip, client_port, ip_packet.srcip, tcp_packet.srcport, tcp_packet.dstport))
       self.connection.send(msg)  
+
+    def installRuleToRewriteSourceToBeNAT(ip_packet, tcp_packet, nat_port):
+      msg = of.ofp_flow_mod()
+      msg.flags |= of.OFPFF_SEND_FLOW_REM
+      msg.match = of.ofp_match.from_packet(packet, event.port)
+      msg.actions.append(of.ofp_action_dl_addr.set_dst(self.arp_entries[ip_packet.dstip]))
+      #msg.actions.append(of.ofp_action_dl_addr.set_src(self.MAC))
+      msg.actions.append(of.ofp_action_nw_addr.set_src(self.EXTERNAL_IP))
+      msg.actions.append(of.ofp_action_tp_port.set_src(nat_port))
+      msg.actions.append(of.ofp_action_output(port = self.EXTERNAL_NETWORK_PORT))
+      msg.data = event.ofp
+      msg.idle_timeout = self.established_idle_timeout
+      log.debug("installing flow to rewrite src to be (%s, %s) for packets from (%s, %s)" % (self.EXTERNAL_IP, nat_port, ip_packet.srcip, tcp_packet.srcport))
+      self.connection.send(msg) 
 
     def rewriteDestinationToBeClient(ip_packet, tcp_packet):
       clientip_port = self.reverse_mappings.get(tcp_packet.dstport)
@@ -171,26 +180,11 @@ class NAT (EventMixin):
       log.debug("rewrite dst to be (%s, %s) for packets from (%s, %s) for nat port %s" % (client_ip, client_port, ip_packet.srcip, tcp_packet.srcport, tcp_packet.dstport))
       self.connection.send(msg)  
 
-    def installRuleToRewriteSourceToBeNAT(ip_packet, tcp_packet, nat_port):
-      #msg = of.ofp_packet_out()
-      msg = of.ofp_flow_mod()
-      msg.flags |= of.OFPFF_SEND_FLOW_REM
-      msg.match = of.ofp_match.from_packet(packet, event.port)
-      msg.actions.append(of.ofp_action_dl_addr.set_dst(self.arp_entries[ip_packet.dstip]))
-      msg.actions.append(of.ofp_action_dl_addr.set_src(self.MAC))
-      msg.actions.append(of.ofp_action_nw_addr.set_src(self.EXTERNAL_IP))
-      msg.actions.append(of.ofp_action_tp_port.set_src(nat_port))
-      msg.actions.append(of.ofp_action_output(port = self.EXTERNAL_NETWORK_PORT))
-      msg.data = event.ofp
-      msg.idle_timeout = self.established_idle_timeout
-      log.debug("installing flow to rewrite src to be (%s, %s) for packets from (%s, %s)" % (self.EXTERNAL_IP, nat_port, ip_packet.srcip, tcp_packet.srcport))
-      self.connection.send(msg) 
-
     def rewriteSourceToBeNAT(ip_packet, tcp_packet, nat_port):
       msg = of.ofp_packet_out()
       msg.match = of.ofp_match.from_packet(packet, event.port)
       msg.actions.append(of.ofp_action_dl_addr.set_dst(self.arp_entries[ip_packet.dstip]))
-      msg.actions.append(of.ofp_action_dl_addr.set_src(self.MAC))
+      #msg.actions.append(of.ofp_action_dl_addr.set_src(self.MAC))
       msg.actions.append(of.ofp_action_nw_addr.set_src(self.EXTERNAL_IP))
       msg.actions.append(of.ofp_action_tp_port.set_src(nat_port))
       msg.actions.append(of.ofp_action_output(port = self.EXTERNAL_NETWORK_PORT))
@@ -213,7 +207,8 @@ class NAT (EventMixin):
       log.debug("got an arp packet")
       return
 
-    log.debug ("got a packet on my nat at port: %s" % (event.port))
+    log.debug ("")
+    log.debug ("**** got a packet on my nat at port: %s" % (event.port))
   
     if packet.next.dstip.in_network(self.INTERNAL_NETWORK_RANGE):
       # do l2 learning switch rules
@@ -241,8 +236,12 @@ class NAT (EventMixin):
     srcdst_quad = (ip_packet.srcip, tcp_packet.srcport, ip_packet.dstip, tcp_packet.dstport)
     srcdst_reverse_quad = (ip_packet.dstip, tcp_packet.dstport, ip_packet.srcip, tcp_packet.srcport)
     srcdst_pair = (ip_packet.srcip, tcp_packet.srcport)
+    def debugPrintTCPPacket():
+      log.debug ("TCP: (%s:%d) -> (%s:%d) Flag: %s" %
+        (ip_packet.srcip, tcp_packet.srcport, ip_packet.dstip, tcp_packet.dstport, tcp_packet.flagsToStr()))
 
     def installPersistentMappings():
+      nat_port = -1
       if self.isForExternalNetwork(ip_packet):
         if srcdst_pair not in self.forward_mappings:
           nat_port = getFreePortOnNat(ip_packet)
@@ -262,6 +261,7 @@ class NAT (EventMixin):
       return
 
     def routePacketsToFromNAT():
+      nat_port = -1
       if self.isForExternalNetwork(ip_packet):
         if srcdst_pair not in self.forward_mappings:
           nat_port = getFreePortOnNat(ip_packet)
@@ -279,15 +279,23 @@ class NAT (EventMixin):
         rewriteDestinationToBeClient(ip_packet, tcp_packet)
         pass    
       return
-      return
 
     #self.tcp_state = {} # (srcip, srcport, dstip, dstport) -> TCPState
+
+    # replace nat IP with client IP if possible
+    if ip_packet.dstip.toStr() == self.EXTERNAL_IP:
+      # find reverse mapping and generate the reverse quad
+      if tcp_packet.dstport in self.reverse_mappings:
+        clientip_port = self.reverse_mappings[tcp_packet.dstport]
+        srcdst_reverse_quad = (clientip_port[0], clientip_port[1], ip_packet.srcip, tcp_packet.srcport)
+        srcdst_quad = (ip_packet.srcip, tcp_packet.srcport, clientip_port[0], clientip_port[1])
+      pass
+
     curr_state = self.tcp_state.get(srcdst_quad)
     forward_direction_conn = True
 
-    installPersistentMappings()
-    return
-    
+    debugPrintTCPPacket()
+
     # find if we're tracking this tcp state and in which direction
     if curr_state is None:
       curr_state = self.tcp_state.get(srcdst_reverse_quad)
@@ -296,21 +304,36 @@ class NAT (EventMixin):
         pass
       pass
 
-    nat_port = None
     if curr_state is None:
+      log.debug("TCPSTATE none")
       self.tcp_state[srcdst_quad] = TCPSTATE.INPROCESS_SYN1_SENT
       routePacketsToFromNAT()
+      return
       pass
     elif curr_state == TCPSTATE.INPROCESS_SYN1_SENT:
       if forward_direction_conn and tcp_packet.ACK:
+        log.debug("TCP State INP: forward")
         self.tcp_state[srcdst_quad] = TCPSTATE.ESTABLISHED_ACK1_SENT
         installPersistentMappings()
+        return
         pass
       else:
+        log.debug("TCP State INP: reverse")
         routePacketsToFromNAT()
+        return
       pass
     elif curr_state == TCPSTATE.ESTABLISHED_ACK1_SENT:
-      installPersistentMappings()
+      log.debug("TCP State established: forward rule already installed")    
+      if forward_direction_conn:
+        routePacketsToFromNAT()
+      else:
+        installPersistentMappings()
+        self.tcp_state[srcdst_quad] = TCPSTATE.ESTABLISHED_REVERSERULE_INSTALLED
+      return
+    elif curr_state == TCPSTATE.ESTABLISHED_REVERSERULE_INSTALLED:
+      log.debug("TCP state established with reverse rule installed")
+      routePacketsToFromNAT()
+      return
     else:
       log.debug("**** came across an UNKNOWN TCPSTATE ** Shouldn't happen ***")
     # =================================================== END

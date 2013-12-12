@@ -1,0 +1,18 @@
+>Syn
+<syn+ack
+>ack
+>ack + psh
+<ack
+<ack
+<ack
+24 frames
+
+
+24 frams
+>SYN
+<SYN+ack
+>ack
+>ack+psh
+<ack
+<ack
+

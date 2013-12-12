@@ -139,6 +139,16 @@ class tcp(packet_base):
     def _setflag (self, flag, value):
       self.flags = (self.flags & ~flag) | (flag if value else 0)
 
+    def flagsToStr(self):
+        if self.ACK and self.SYN:
+            return "SYN+ACK"
+        elif self.ACK and not self.SYN:
+            return "ACK"
+        elif self.SYN and not self.ACK:
+            return "SYN"
+        else:
+            return self.flags
+
     def __init__(self, raw=None, prev=None, **kw):
         packet_base.__init__(self)
 
