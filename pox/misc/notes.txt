@@ -17,3 +17,40 @@
 <ack
 
 wget http://172.64.3.21:8000/big.tar.gz
+
+# **** client1 connecting to server1
+root@mininet-vm:~/client1# wget http://172.64.3.21:8000/big.tar.gz
+--2013-12-11 20:24:15--  http://172.64.3.21:8000/big.tar.gz
+Connecting to 172.64.3.21:8000... connected.
+HTTP request sent, awaiting response... 200 OK
+Length: 203924708 (194M) [application/octet-stream]
+Saving to: `big.tar.gz.1'
+
+100%[======================================>] 203,924,708 97.6M/s   in 2.0s    
+
+2013-12-11 20:24:17 (97.6 MB/s) - `big.tar.gz.1' saved [203924708/203924708]
+
+
+#**** client1 connecting to server2
+root@mininet-vm:~/client1# wget http://172.64.3.22:8000/index.html
+--2013-12-11 20:26:07--  http://172.64.3.22:8000/index.html
+Connecting to 172.64.3.22:8000... connected.
+HTTP request sent, awaiting response... 200 OK
+Length: 10758 (11K) [text/html]
+Saving to: `index.html'
+
+100%[======================================>] 10,758      --.-K/s   in 0.001s  
+
+2013-12-11 20:26:07 (18.4 MB/s) - `index.html' saved [10758/10758]
+
+#**** client3 connecting to server1
+root@mininet-vm:~/client3# wget http://172.64.3.21:8000/big.tar.gz
+--2013-12-11 20:26:51--  http://172.64.3.21:8000/big.tar.gz
+Connecting to 172.64.3.21:8000... connected.
+HTTP request sent, awaiting response... 200 OK
+Length: 203924708 (194M) [application/octet-stream]
+Saving to: `big.tar.gz.1'
+
+100%[======================================>] 203,924,708 93.7M/s   in 2.1s    
+
+2013-12-11 20:27:00 (93.7 MB/s) - `big.tar.gz.1' saved [203924708/203924708]
